@@ -81,6 +81,8 @@ class Settings:
     stripe_price_id: str = field(default_factory=lambda: _str("STRIPE_PRICE_ID"))
 
     database_path: Path = field(default_factory=lambda: ROOT / _str("DATABASE_PATH", "data/signals.db"))
+    # Backtest trades for the analytics page (built with: python -m scripts.load_demo --db data/backtest.db)
+    backtest_database_path: Path = field(default_factory=lambda: ROOT / _str("BACKTEST_DATABASE_PATH", "data/backtest.db"))
 
     htf_interval: str = field(default_factory=lambda: _str("HTF_INTERVAL", "4h"))
     ltf_interval: str = field(default_factory=lambda: _str("LTF_INTERVAL", "15min"))

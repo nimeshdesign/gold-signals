@@ -18,6 +18,7 @@ from .. import db
 from ..config import settings
 from ..strategies import DEFAULT_PARAMS
 from ..telegram_bot import TelegramClient, TelegramError
+from . import analytics
 from .payments import Stripe, StripeError, verify_webhook
 from .stats import compute_stats
 
@@ -144,6 +145,29 @@ def _service_state(name: str) -> str:
         return out.stdout.strip() or "unknown"
     except (OSError, subprocess.SubprocessError):
         return "unknown"
+
+
+@app.get("/analytics", response_class=HTMLResponse)
+def analytics_page(request: Request, src: str = "live", period: str = "all", side: str = "all", show: str = "all"):
+    """Owner analytics: profitable trades, stop losses, and when they happen. Live or backtest data."""
+    src = "backtest" if src == "backtest" else "live"
+    path = settings.backtest_database_path if src == "backtest" else settings.database_path
+    rows = []
+    if path.exists():
+        with db.session(path) as conn:
+            rows = db.all_signals(conn)
+    a = analytics.compute(analytics.filter_frame(analytics.to_frame(rows), period, side))
+    table = a.rows
+    if show == "sl":
+        table = [r for r in table if r["is_sl"]]
+    elif show == "win":
+        table = [r for r in table if r["result_r"] > 0]
+    return templates.TemplateResponse(request, "analytics.html", {
+        "a": a, "src": src, "period": period, "side": side, "show": show, "table": table[:500],
+        "table_total": len(table), "has_backtest": settings.backtest_database_path.exists(),
+        "equity_json": json.dumps(a.equity),
+        "monthly_json": json.dumps([[m["month"], m["net_r"], m["trades"], m["win_rate"]] for m in a.monthly]),
+    })
 
 
 @app.get("/healthz")

@@ -135,3 +135,32 @@ footer.site a { color: var(--muted); }
 .facts dt { color: var(--muted); font-size: 14px; }
 .facts dd { margin: 0; }
 @media (max-width: 560px) { .facts { grid-template-columns: 1fr; gap: 2px; } .facts dd { margin-bottom: 12px; } }
+
+/* analytics page */
+.controls { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 16px; }
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg-btn { padding: 8px 14px; font-size: 14px; color: var(--ink-2); text-decoration: none; border-right: 1px solid var(--line); }
+.seg-btn:last-child { border-right: 0; }
+.seg-btn:hover { color: var(--ink); background: var(--accent-soft); }
+.seg-btn.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.pos-ink { color: var(--good); }
+.neg-ink { color: var(--bad); }
+.money { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 16px 20px; }
+.money input { width: 110px; font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+.money p { flex-basis: 100%; margin: 4px 0 0; }
+.outcome + .outcome { margin-top: 14px; }
+.outcome-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 15px; }
+.outcome-nums { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.meter { height: 8px; background: var(--line); border-radius: 4px; margin-top: 6px; overflow: hidden; }
+.meter span { display: block; height: 100%; border-radius: 4px; }
+/* Profit/loss fills: blue/red diverging pair, validated for colour-blind readers in both themes. */
+:root { --profit: #2a78d6; --loss: #e34948; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --profit: #3987e5; --loss: #e66767; } }
+:root[data-theme="dark"] { --profit: #3987e5; --loss: #e66767; }
+.meter .good { background: var(--profit); }
+.meter .bad { background: var(--loss); }
+.chart .bar-pos { fill: var(--profit); }
+.chart .bar-neg { fill: var(--loss); }
+.small-chip { font-size: 13px; font-weight: 500; }
+.table-wrap.flat { border: 0; }
+details summary { cursor: pointer; color: var(--accent); }
