@@ -1,0 +1,15 @@
+# /etc/systemd/system/gold-engine.service
+[Unit]
+Description=Gold signal engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=gold
+WorkingDirectory=/opt/gold-signals
+ExecStart=/opt/gold-signals/.venv/bin/python -m app.engine
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/*.db
+data/*.db-*
+data/*.csv
+backtest_trades.csv
+.pytest_cache/
+deploy/Caddyfile.local
+*.key
+*.pem

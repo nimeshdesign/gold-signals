@@ -1,0 +1,15 @@
+# /etc/systemd/system/gold-web.service
+[Unit]
+Description=Gold signals website
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=gold
+WorkingDirectory=/opt/gold-signals
+ExecStart=/opt/gold-signals/.venv/bin/uvicorn app.web.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

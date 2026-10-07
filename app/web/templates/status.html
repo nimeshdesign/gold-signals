@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Status · {{ brand }}{% endblock %}
+{% block content %}
+<meta http-equiv="refresh" content="60">
+{% macro chip(kind, text) -%}
+  <span class="chip {{ kind }}"><span aria-hidden="true">{{ {"good": "●", "bad": "✕", "warn": "▲", "idle": "○"}[kind] }}</span> {{ text }}</span>
+{%- endmacro %}
+{% macro fmt_time(iso) -%}{{ iso|dt if iso else "–" }}{%- endmacro %}
+
+<div class="status-head">
+  <h1>Status</h1>
+  <p class="muted small">Refreshes every minute · page loaded {{ now.strftime("%Y-%m-%d %H:%M UTC") }}</p>
+</div>
+
+<h2>Health</h2>
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Signal engine</div>
+    <div class="value-sm">
+      {% if engine_ok %}{{ chip("good", "Running") }}
+      {% elif heartbeat %}{{ chip("bad", "No check for %.0f min"|format(age_min)) }}
+      {% else %}{{ chip("idle", "Waiting for first check") }}{% endif %}
+    </div>
+    <div class="small muted">Last check {{ "%.0f"|format(age_min) ~ " min ago" if age_min is not none else "–" }}{% if service != "unknown" %} · service {{ service }}{% endif %}</div>
+  </div>
+  <div class="tile">
+    <div class="label">Telegram</div>
+    <div class="value-sm">
+      {% if dry_run %}{{ chip("warn", "Test mode, not posting") }}
+      {% elif channel_set %}{{ chip("good", "Posting live") }}
+      {% else %}{{ chip("bad", "No channel set") }}{% endif %}
+    </div>
+  </div>
+  <div class="tile">
+    <div class="label">Last error</div>
+    <div class="value-sm">
+      {% if last_error %}{{ chip("bad", last_error.time|dt) }}{% else %}{{ chip("good", "None") }}{% endif %}
+    </div>
+    {% if last_error %}<div class="small muted err">{{ last_error.message }}</div>{% endif %}
+  </div>
+  <div class="tile">
+    <div class="label">Subscribers</div>
+    <div class="value">{{ subs.get("active", 0) }}</div>
+    <div class="small muted">active{% for k, v in subs.items() if k != "active" %} · {{ v }} {{ k }}{% endfor %}</div>
+  </div>
+</div>
+
+<h2>Today</h2>
+{% if snap %}
+<div class="card">
+  <dl class="facts">
+    <dt>Gold price</dt>
+    <dd><strong>{{ "%.2f"|format(snap.price) }}</strong> <span class="muted small">at {{ snap.price_time|dt }}</span></dd>
+
+    {% if snap.trend %}
+    <dt>Trend ({{ snap.trend.label }})</dt>
+    <dd>{{ chip("good" if snap.trend.direction == "UP" else "warn", snap.trend.direction ~ (" · buys only" if snap.trend.direction == "UP" else " · sells only")) }}
+      <span class="muted small">close {{ "%.2f"|format(snap.trend.close) }} vs EMA {{ "%.2f"|format(snap.trend.ema) }}</span></dd>
+    {% endif %}
+
+    {% if snap.range %}
+    <dt>Asian range ({{ "%02d"|format(snap.range.start) }}:00–{{ "%02d"|format(snap.range.end) }}:00 UTC)</dt>
+    <dd>{% if snap.range.high is not none %}
+          {{ "%.2f"|format(snap.range.low) }} – {{ "%.2f"|format(snap.range.high) }}
+          <span class="muted small">({{ "%.2f"|format(snap.range.high - snap.range.low) }} wide{{ ", still forming" if not snap.range.complete }})</span>
+        {% else %}<span class="muted">not started yet</span>{% endif %}</dd>
+
+    <dt>Trade window ({{ "%02d"|format(snap.range.end) }}:00–{{ snap.range.window_end }}:00 UTC)</dt>
+    <dd>{{ chip("good", "Open, watching for a breakout") if snap.range.window_open else chip("idle", "Closed") }}</dd>
+    {% endif %}
+
+    <dt>Today's signal</dt>
+    <dd>{% if snap.signal_today %}
+          {{ chip("good", snap.signal_today.direction ~ " at " ~ "%.2f"|format(snap.signal_today.price)) }}
+          <span class="muted small">{{ snap.signal_today.time|dt }}</span>
+        {% else %}<span class="muted">None yet (at most one per day)</span>{% endif %}</dd>
+
+    {% if snap.news_block is defined %}
+    <dt>News blackout</dt>
+    <dd>{{ chip("warn", snap.news_block) if snap.news_block else chip("good", "Clear") }}</dd>
+    {% endif %}
+
+    {% if snap.skip_note %}
+    <dt>Last skipped signal</dt>
+    <dd class="small">{{ snap.skip_note }}</dd>
+    {% endif %}
+
+    <dt>Strategy</dt>
+    <dd class="small muted">{{ snap.strategy }} · TP1 {{ snap.tp1_r }}R · TP2 {{ snap.tp2_r }}R</dd>
+  </dl>
+</div>
+{% else %}
+<p class="muted">The engine hasn't saved a status yet. It does this after every 15-minute check.</p>
+{% endif %}
+
+<h2>Open trades</h2>
+{% if open_rows %}
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Sent</th><th>Side</th><th class="num">Entry</th><th class="num">SL</th><th class="num">TP1</th><th class="num">TP2</th><th>State</th></tr></thead>
+    <tbody>
+    {% for s in open_rows %}
+      <tr>
+        <td>{{ s.id }}</td><td>{{ s.created_at|dt }}</td><td>{{ s.direction }}</td>
+        <td class="num">{{ "%.2f"|format(s.entry) }}</td><td class="num">{{ "%.2f"|format(s.sl) }}</td>
+        <td class="num">{{ "%.2f"|format(s.tp1) }}</td><td class="num">{{ "%.2f"|format(s.tp2) }}</td>
+        <td>{{ "TP1 hit, stop at entry" if s.status == "tp1" else "Waiting for TP1 or SL" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="muted">No open trades.</p>
+{% endif %}
+
+<h2>Recent signals</h2>
+{% if recent %}
+{% set outcome = {"open": "Open", "tp1": "TP1 hit, running", "sl": "Stop loss", "be": "TP1, then breakeven", "tp2": "TP1 + TP2", "expired": "Time limit"} %}
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Sent</th><th>Side</th><th class="num">Entry</th><th>Outcome</th><th class="num">Result</th><th>Telegram</th></tr></thead>
+    <tbody>
+    {% for s in recent %}
+      <tr>
+        <td>{{ s.id }}</td><td>{{ s.created_at|dt }}</td><td>{{ s.direction }}</td>
+        <td class="num">{{ "%.2f"|format(s.entry) }}</td>
+        <td>{{ outcome.get(s.status, s.status) }}</td>
+        <td class="num {{ 'pos' if (s.result_r or 0) > 0 else ('neg' if (s.result_r or 0) < 0 else '') }}">{{ "%+.2fR"|format(s.result_r) if s.result_r is not none else "–" }}</td>
+        <td>{{ "Sent" if s.telegram_msg_id else "Not sent" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="muted">No signals yet. Live signals appear here as soon as the engine sends them.</p>
+{% endif %}
+
+<h2>Live track record</h2>
+{% include "_tiles.html" %}
+{% endblock %}

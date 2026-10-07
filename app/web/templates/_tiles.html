@@ -1,0 +1,8 @@
+<div class="tiles">
+  <div class="tile"><div class="label">Closed signals</div><div class="value">{{ stats.closed }}</div></div>
+  <div class="tile"><div class="label">Win rate</div><div class="value">{{ "%.0f%%"|format(stats.win_rate) if stats.win_rate is not none else "–" }}</div></div>
+  <div class="tile"><div class="label">Total result</div><div class="value">{{ "%+.2fR"|format(stats.total_r) }}</div></div>
+  <div class="tile"><div class="label">Average per signal</div><div class="value">{{ "%+.2fR"|format(stats.avg_r) if stats.avg_r is not none else "–" }}</div></div>
+  <div class="tile"><div class="label">Profit factor</div><div class="value">{{ stats.profit_factor if stats.profit_factor is not none else "–" }}</div></div>
+  <div class="tile"><div class="label">Max drawdown</div><div class="value">{{ "%.2fR"|format(stats.max_drawdown_r) }}</div></div>
+</div>

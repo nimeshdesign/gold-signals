@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Risk disclaimer · {{ brand }}{% endblock %}
+{% block content %}
+<h1>Risk disclaimer</h1>
+<div class="card">
+  <p><strong>High risk.</strong> Trading gold (XAUUSD), CFDs, futures and other leveraged products carries a high
+    level of risk and can result in losses larger than your deposit, depending on your broker. Most retail traders
+    lose money trading leveraged products.</p>
+  <p><strong>Not personal advice.</strong> {{ brand }} publishes general, rule-based trade ideas. We do not know your
+    financial situation, objectives or risk tolerance, and nothing we publish is a recommendation that a particular
+    trade is suitable for you. Consult a licensed financial adviser if you need personal advice.</p>
+  <p><strong>No guarantee.</strong> Past performance, including our published track record, does not guarantee
+    future results. Signals will have losing trades and losing periods. Gold can gap or move sharply on news, and
+    stop losses may fill at worse prices than shown.</p>
+  <p><strong>Results shown.</strong> Track record figures are calculated from our published entry, stop and target
+    levels using 15-minute candles. They exclude spread, commission, swap and slippage, which differ by broker and
+    reduce real returns.</p>
+  <p><strong>Your responsibility.</strong> You decide whether to take any trade and how large it is. You are solely
+    responsible for your trading decisions and their outcomes.</p>
+  {# OPERATOR: have this text reviewed for the jurisdictions you sell into.
+     Selling trading signals may require a licence or registration in some countries. #}
+</div>
+{% endblock %}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ brand }}{% endblock %}</title>
+  <meta name="description" content="Rule-based {{ symbol }} trading signals on Telegram with a full public track record.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% if site_banner %}<div class="site-banner" role="status">{{ site_banner }}</div>{% endif %}
+  <header class="site">
+    <div class="wrap">
+      <a class="logo" href="/"><span class="logo-mark" aria-hidden="true"></span>{{ brand }}</a>
+      <nav>
+        <a href="/performance">Track record</a>
+        <a href="/pricing">Pricing</a>
+        <a href="/disclaimer">Risk disclaimer</a>
+        <a href="/status">Status</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+  <footer class="site">
+    <div class="wrap">
+      <p><strong>Risk warning:</strong> Trading gold and other leveraged products carries a high risk of loss and is not
+        suitable for everyone. Past results do not guarantee future results. Signals are general information, not
+        personal financial advice. <a href="/disclaimer">Read the full disclaimer</a>.</p>
+      <p>&copy; {{ brand }} · <a href="mailto:{{ support_email }}">{{ support_email }}</a></p>
+    </div>
+  </footer>
+</body>
+</html>

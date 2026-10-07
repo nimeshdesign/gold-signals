@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Track record · {{ brand }}{% endblock %}
+{% block content %}
+<h1>Track record</h1>
+<p class="lede">Every closed signal since launch, including the losses. Nothing is removed or edited after the fact.</p>
+
+{% include "_tiles.html" %}
+
+<h2>Cumulative result (R)</h2>
+{% if stats.equity|length >= 2 %}
+<div class="card chart" id="equity">
+  <svg role="img" aria-label="Cumulative result in R after each closed signal"></svg>
+  <div class="tooltip" hidden></div>
+</div>
+<script>
+(() => {
+  const data = {{ equity_json|safe }};
+  const box = document.getElementById("equity");
+  const svg = box.querySelector("svg");
+  const tip = box.querySelector(".tooltip");
+  const NS = "http://www.w3.org/2000/svg";
+  const pad = { t: 16, r: 16, b: 28, l: 48 };
+
+  function el(name, attrs) {
+    const e = document.createElementNS(NS, name);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  function draw() {
+    svg.innerHTML = "";
+    const W = svg.clientWidth, H = svg.clientHeight;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const ys = data.map(d => d[1]).concat([0]);
+    let lo = Math.min(...ys), hi = Math.max(...ys);
+    if (hi === lo) { hi += 1; lo -= 1; }
+    // Round axis to 1/2/5 x 10^k steps so tick labels are readable numbers.
+    const raw = (hi - lo) / 4, mag = 10 ** Math.floor(Math.log10(raw));
+    const stepR = [1, 2, 5, 10].map(m => m * mag).find(s => s >= raw);
+    lo = Math.floor(lo / stepR) * stepR; hi = Math.ceil(hi / stepR) * stepR;
+    const x = i => pad.l + (i / (data.length - 1)) * (W - pad.l - pad.r);
+    const y = v => pad.t + (hi - v) / (hi - lo) * (H - pad.t - pad.b);
+
+    for (let v = lo; v <= hi + stepR / 2; v += stepR) {
+      svg.append(el("line", { class: "grid-line", x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v) }));
+      const t = el("text", { class: "axis-label", x: pad.l - 8, y: y(v) + 4, "text-anchor": "end" });
+      t.textContent = `${+v.toFixed(2)}R`;
+      svg.append(t);
+    }
+    svg.append(el("line", { class: "zero-line", x1: pad.l, x2: W - pad.r, y1: y(0), y2: y(0) }));
+    const first = el("text", { class: "axis-label", x: pad.l, y: H - 8 });
+    first.textContent = "Signal 1";
+    const last = el("text", { class: "axis-label", x: W - pad.r, y: H - 8, "text-anchor": "end" });
+    last.textContent = `Signal ${data.length}`;
+    svg.append(first, last);
+
+    svg.append(el("path", { class: "series", d: data.map((d, i) => `${i ? "L" : "M"}${x(i)},${y(d[1])}`).join("") }));
+
+    const cross = el("line", { class: "cross", y1: pad.t, y2: H - pad.b, visibility: "hidden" });
+    const dot = el("circle", { class: "dot", r: 5, visibility: "hidden" });
+    svg.append(cross, dot);
+
+    svg.onpointermove = e => {
+      const rect = svg.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const i = Math.max(0, Math.min(data.length - 1, Math.round((px - pad.l) / (W - pad.l - pad.r) * (data.length - 1))));
+      const cx = x(i), cy = y(data[i][1]);
+      cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+      dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("visibility", "visible");
+      const when = new Date(data[i][0]).toISOString().slice(0, 10);
+      tip.textContent = `Signal ${i + 1} · ${when} · ${data[i][1] >= 0 ? "+" : ""}${data[i][1].toFixed(2)}R`;
+      tip.style.left = `${cx}px`; tip.style.top = `${cy + 24}px`; tip.hidden = false;
+    };
+    svg.onpointerleave = () => {
+      cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); tip.hidden = true;
+    };
+  }
+  draw();
+  addEventListener("resize", draw);
+})();
+</script>
+{% else %}
+<p class="muted">The chart appears once at least two signals have closed.</p>
+{% endif %}
+
+<h2>All closed signals</h2>
+{% if signals %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Sent</th><th>Side</th>
+        <th class="num">Entry</th><th class="num">SL</th><th class="num">TP1</th><th class="num">TP2</th>
+        <th>Outcome</th><th class="num">Result</th><th>Closed</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% set outcome = {"sl": "Stop loss", "be": "TP1, then breakeven", "tp2": "TP1 + TP2", "expired": "Time limit"} %}
+    {% for s in signals %}
+      <tr>
+        <td>{{ s.id }}</td>
+        <td>{{ s.created_at|dt }}</td>
+        <td>{{ s.direction }}</td>
+        <td class="num">{{ "%.2f"|format(s.entry) }}</td>
+        <td class="num">{{ "%.2f"|format(s.sl) }}</td>
+        <td class="num">{{ "%.2f"|format(s.tp1) }}</td>
+        <td class="num">{{ "%.2f"|format(s.tp2) }}</td>
+        <td>{{ outcome.get(s.status, s.status) }}</td>
+        <td class="num {{ 'pos' if s.result_r > 0 else ('neg' if s.result_r < 0 else '') }}">{{ "%+.2fR"|format(s.result_r) }}</td>
+        <td>{{ s.closed_at|dt }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="small muted">Download as JSON: <a href="/api/signals">/api/signals</a>. Open signals appear here once they close.</p>
+{% else %}
+<p class="muted">No closed signals yet. The first results will appear here as soon as a trade finishes.</p>
+{% endif %}
+
+<h2>How results are counted</h2>
+<div class="card small">
+  <p>Each signal is measured in R, where 1R is the distance between entry and stop loss.</p>
+  <ul>
+    <li>Stop loss hit before TP1: −1R.</li>
+    <li>TP1 hit, half closed, rest stopped at entry: +{{ "%.2f"|format(params.tp1_r / 2) }}R.</li>
+    <li>TP1 and TP2 both hit: +{{ "%.2f"|format(params.tp1_r / 2 + params.tp2_r / 2) }}R.</li>
+    <li>Still open after the time limit: closed at the market price.</li>
+  </ul>
+  <p class="muted">If one 15-minute candle touches both the stop and a target, we count the stop. Results exclude spread,
+    commission and slippage, which vary by broker and reduce real returns.</p>
+</div>
+{% endblock %}
