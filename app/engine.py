@@ -34,6 +34,7 @@ log = logging.getLogger("engine")
 
 # 15-min candles for trade tracking and intraday rules; 1h candles (~10 months) for 4h/daily trends.
 M15_BARS = 1000
+M15_BACKFILL = 5000  # Twelve Data maximum per request (~7 weeks of 15-min candles)
 H1_BARS = 5000
 M15 = pd.Timedelta(minutes=15)
 
@@ -63,6 +64,7 @@ class Engine:
             return
         data = build_data(m15, h1)
         with db.session() as conn:
+            self.save_candles(conn, m15)
             self.track_open_signals(conn, m15)
             signals = self.check_for_signal(conn, data)
             snap = None
@@ -111,6 +113,16 @@ class Engine:
                 self.tg.send_message(chat, format_week_summary(settings.display_symbol, week_rows, monday))
                 db.kv_set(conn, "week_sent", week)
                 log.info("Sent weekly summary")
+
+    def save_candles(self, conn, m15: pd.DataFrame) -> None:
+        """Keep 15-min candles for the chart page. The first run backfills ~7 weeks (enough for the daily trend)."""
+        try:
+            if db.candle_count(conn) < M15_BACKFILL // 2:
+                history = self.feed.candles("15min", M15_BACKFILL)
+                log.info("Backfilled %d candles for the chart page", db.upsert_candles(conn, history))
+            db.upsert_candles(conn, m15)
+        except Exception:
+            log.exception("Could not save candles")
 
     def status_snapshot(self, data: dict[str, pd.DataFrame], signals: pd.DataFrame) -> dict:
         """What the strategy sees right now, for the owner's status page."""

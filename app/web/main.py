@@ -8,7 +8,7 @@ import logging
 import secrets
 import subprocess
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -21,7 +21,7 @@ from .. import db
 from ..config import settings
 from ..strategies import DEFAULT_PARAMS
 from ..telegram_bot import TelegramClient, TelegramError
-from . import analytics, auth
+from . import analytics, auth, chart
 from .payments import Stripe, StripeError, verify_webhook
 from .stats import compute_stats
 
@@ -250,6 +250,33 @@ def analytics_page(request: Request, src: str = "live", period: str = "all", sid
         "table_total": len(table), "has_backtest": settings.backtest_database_path.exists(),
         "equity_json": json.dumps(a.equity),
         "monthly_json": json.dumps([[m["month"], m["net_r"], m["trades"], m["win_rate"]] for m in a.monthly]),
+    })
+
+
+@app.get("/chart", response_class=HTMLResponse)
+def chart_page(request: Request, src: str = "live", day: str | None = None, signal: int | None = None):
+    """Price chart for one day with the strategy's levels and any signal's entry/SL/TP."""
+    src = "backtest" if src == "backtest" else "live"
+    path = settings.backtest_database_path if src == "backtest" else settings.database_path
+    params = {**DEFAULT_PARAMS["session_breakout"], **settings.strategy_params}
+    view, days, chosen = None, [], None
+    if path.exists():
+        with db.session(path) as conn:
+            days = db.candle_days(conn)
+            chosen = (chart.signal_day(conn, signal) if signal else None) or chart.parse_day(day, days)
+            if chosen:
+                view = chart.day_view(conn, chosen, params, settings.strategy.tp1_r, settings.strategy.tp2_r,
+                                      settings.display_tz_offset)
+    prev_day, next_day = chart.neighbours(days, chosen) if chosen else (None, None)
+    payload = None
+    if view:
+        payload = json.dumps({"candles": view["candles"], "levels": view["levels"], "markers": view["markers"]})
+    return templates.TemplateResponse(request, "chart.html", {
+        "src": src, "view": view, "day": chosen, "prev_day": prev_day, "next_day": next_day,
+        "first_day": days[0] if days else None, "last_day": days[-1] if days else None,
+        "payload": payload, "tz_name": settings.display_tz_name, "tz_offset": settings.display_tz_offset,
+        "delta": timedelta(hours=settings.display_tz_offset),
+        "range_start": params["range_start"], "range_end": params["range_end"], "window_end": params["window_end"],
     })
 
 

@@ -42,6 +42,15 @@ CREATE TABLE IF NOT EXISTS subscribers (
     updated_at              TEXT NOT NULL
 );
 
+-- 15-minute price candles (open time, UTC ISO) for the chart page.
+CREATE TABLE IF NOT EXISTS candles (
+    time  TEXT PRIMARY KEY,
+    open  REAL NOT NULL,
+    high  REAL NOT NULL,
+    low   REAL NOT NULL,
+    close REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -145,6 +154,37 @@ def update_subscriber(conn, subscriber_id: int, **fields) -> None:
     fields["updated_at"] = utcnow_iso()
     cols = ", ".join(f"{k} = ?" for k in fields)
     conn.execute(f"UPDATE subscribers SET {cols} WHERE id = ?", (*fields.values(), subscriber_id))
+
+
+# ---------- candles ----------
+
+def upsert_candles(conn, df) -> int:
+    """Save 15-min candles (DataFrame indexed by UTC open time). Returns rows written."""
+    rows = [(ts.tz_convert("UTC").isoformat(), float(r.open), float(r.high), float(r.low), float(r.close))
+            for ts, r in zip(df.index, df.itertuples())]
+    conn.executemany("INSERT OR REPLACE INTO candles (time, open, high, low, close) VALUES (?, ?, ?, ?, ?)", rows)
+    return len(rows)
+
+
+def candle_count(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
+
+
+def load_candles(conn, start: str, end: str):
+    """Candles with start <= open time < end (UTC ISO strings) as a DataFrame."""
+    import pandas as pd
+
+    rows = conn.execute("SELECT time, open, high, low, close FROM candles WHERE time >= ? AND time < ? ORDER BY time",
+                        (start, end)).fetchall()
+    df = pd.DataFrame([dict(r) for r in rows], columns=["time", "open", "high", "low", "close"])
+    df.index = pd.to_datetime(df.pop("time"), utc=True, format="ISO8601")
+    df.index.name = "datetime"
+    return df
+
+
+def candle_days(conn) -> list[str]:
+    """Dates (YYYY-MM-DD, UTC) that have candles, oldest first."""
+    return [r[0] for r in conn.execute("SELECT DISTINCT substr(time, 1, 10) FROM candles ORDER BY 1")]
 
 
 # ---------- key/value (e.g. Telegram update offset) ----------

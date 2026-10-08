@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Chart · {{ brand }}{% endblock %}
+{% block content %}
+{% macro chip(kind, text) -%}
+  <span class="chip {{ kind }}"><span aria-hidden="true">{{ {"good": "●", "bad": "✕", "warn": "▲", "idle": "○"}[kind] }}</span> {{ text }}</span>
+{%- endmacro %}
+{% macro hour(h) -%}
+  {%- set m = (h * 60 + tz_offset * 60)|int % 1440 -%}
+  {{ "%d:%02d %s"|format(((m // 60) % 12) or 12, m % 60, "AM" if m < 720 else "PM") }}
+{%- endmacro %}
+
+<h1>Chart</h1>
+<p class="lede">Gold on 15-minute candles with the day's levels. Times in {{ tz_name }}.</p>
+
+<div class="controls">
+  <div class="seg" role="group" aria-label="Data">
+    <a class="seg-btn{{ ' on' if src == 'live' }}" href="?src=live">Live</a>
+    <a class="seg-btn{{ ' on' if src == 'backtest' }}" href="?src=backtest">Backtest (3 years)</a>
+  </div>
+  {% if day %}
+  <form class="day-nav" method="get" action="/chart">
+    <input type="hidden" name="src" value="{{ src }}">
+    {% if prev_day %}<a class="seg-btn btn-edge" href="?src={{ src }}&amp;day={{ prev_day }}" aria-label="Previous day">‹ Prev</a>{% endif %}
+    <input type="date" name="day" value="{{ day.isoformat() }}" min="{{ first_day }}" max="{{ last_day }}" aria-label="Day" onchange="this.form.submit()">
+    {% if next_day %}<a class="seg-btn btn-edge" href="?src={{ src }}&amp;day={{ next_day }}" aria-label="Next day">Next ›</a>{% endif %}
+    {% if last_day and day.isoformat() != last_day %}<a class="seg-btn btn-edge" href="?src={{ src }}">Latest</a>{% endif %}
+  </form>
+  {% endif %}
+</div>
+
+{% if not view %}
+  <div class="card">
+    {% if not first_day %}
+      <h3>No price data yet</h3>
+      {% if src == "live" %}
+      <p class="muted">The engine starts saving candles on its next 15-minute check (it backfills about 7 weeks the first time). Refresh in a few minutes, or <a href="?src=backtest">browse the backtest</a>.</p>
+      {% else %}
+      <p class="muted">Backtest candles aren't loaded on this server yet.</p>
+      {% endif %}
+    {% else %}
+      <h3>No candles for this day</h3>
+      <p class="muted">Gold doesn't trade at weekends. Pick another date.</p>
+    {% endif %}
+  </div>
+{% else %}
+
+<h2 class="chart-day">{{ view.day.strftime("%A %d %B %Y") }}</h2>
+
+<div class="card chart-card">
+  <div id="price-chart" role="img" aria-label="15-minute gold candles with range, entry, stop loss and take-profit levels"></div>
+  <ul class="legend small" aria-label="Line key">
+    <li><span class="key key-range"></span>Asian range</li>
+    {% if view.trades %}
+      <li><span class="key key-entry"></span>Entry</li>
+      <li><span class="key key-sl"></span>Stop loss</li>
+      <li><span class="key key-tp"></span>TP1 / TP2</li>
+    {% elif view.trigger %}<li><span class="key key-trigger"></span>{{ view.trigger.side|title }} trigger</li>{% endif %}
+  </ul>
+  <p class="small muted">Asian range forms {{ hour(range_start) }}–{{ hour(range_end) }}; signals can fire {{ hour(range_end) }}–{{ hour(window_end) }} {{ tz_name }}. Hover the chart for prices. Scroll or pinch to zoom.</p>
+</div>
+
+<div class="grid" style="margin-top:16px">
+  <div class="card">
+    <h3>The day</h3>
+    <dl class="facts">
+      <dt>Trend</dt>
+      <dd>{% if view.trend %}{{ chip("good" if view.trend.direction == "UP" else "warn", view.trend.direction ~ (" · buys only" if view.trend.direction == "UP" else " · sells only")) }}
+        <div class="small muted">previous close {{ "%.2f"|format(view.trend.close) }} vs {{ view.trend.length }}-day EMA {{ "%.2f"|format(view.trend.ema) }}</div>
+        {% else %}<span class="muted">not enough history</span>{% endif %}</dd>
+      <dt>Asian range</dt>
+      <dd>{% if view.range.high is not none %}{{ "%.2f"|format(view.range.low) }} – {{ "%.2f"|format(view.range.high) }} <span class="muted small">({{ "%.2f"|format(view.range.width) }} wide)</span>{% else %}<span class="muted">not formed</span>{% endif %}</dd>
+      {% if view.trigger %}<dt>Trigger</dt><dd>{{ view.trigger.side }} on a 15-min close {{ "above" if view.trigger.side == "BUY" else "below" }} {{ "%.2f"|format(view.trigger.price) }}</dd>{% endif %}
+      <dt>Day high / low</dt><dd>{{ "%.2f"|format(view.day_high) }} / {{ "%.2f"|format(view.day_low) }}</dd>
+      <dt>Strategy</dt>
+      <dd>{% if view.strategy_signal %}{{ view.strategy_signal.side }} at {{ "%.2f"|format(view.strategy_signal.price) }}
+            <span class="muted small">at {{ (view.strategy_signal.time + delta).strftime("%I:%M %p") }}</span>
+            {% if not view.trades %}<div class="small muted">Not sent: {{ "the engine wasn't running yet, or a filter (open trade, news) blocked it" if src == "live" else "another trade was still open" }}.</div>{% endif %}
+          {% else %}<span class="muted">No breakout in the trend direction</span>{% endif %}</dd>
+    </dl>
+  </div>
+
+  {% for t in view.trades %}{% set r = t.row %}
+  <div class="card">
+    <h3>Signal #{{ r.id }}: {{ r.direction }}</h3>
+    <div class="table-wrap flat">
+      <table>
+        <thead><tr><th>Level</th><th class="num">Price</th><th class="num">From entry</th><th class="num">R</th></tr></thead>
+        <tbody>
+          {% for name, price in [("TP2", r.tp2), ("TP1", r.tp1), ("Entry", r.entry), ("Stop loss", r.sl)] %}
+          {% set dist = (price - r.entry) if r.direction == "BUY" else (r.entry - price) %}
+          <tr><td>{{ name }}</td><td class="num">{{ "%.2f"|format(price) }}</td>
+            <td class="num {{ 'pos' if dist > 0 else ('neg' if dist < 0 else '') }}">{{ "%+.2f"|format(dist) if name != "Entry" else "–" }}</td>
+            <td class="num">{{ "%+.1fR"|format(dist / t.risk) if name != "Entry" and t.risk else "–" }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p style="margin:12px 0 4px"><span class="chip {{ 'good' if (r.result_r or 0) > 0 else ('bad' if r.status == 'sl' or (r.result_r or 0) < 0 else 'idle') }}">
+      <span aria-hidden="true">{{ "●" if (r.result_r or 0) > 0 else ("✕" if r.status == "sl" or (r.result_r or 0) < 0 else "○") }}</span> {{ t.outcome }}</span>
+      {% if r.result_r is not none %} <strong>{{ "%+.2fR"|format(r.result_r) }}</strong>{% endif %}</p>
+    <p class="small muted">Risk {{ "%.2f"|format(t.risk) }} per ounce = 1R.
+      {% for ev in t.events %}{{ {"tp1": "TP1", "tp2": "TP2", "sl": "Stop loss", "be": "Stop at entry"}.get(ev.event, ev.event) }} at {{ (ev.time + delta).strftime("%d %b %I:%M %p") }}{{ "; " if not loop.last else "." }}{% endfor %}</p>
+  </div>
+  {% endfor %}
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(() => {
+  const data = {{ payload|safe }};
+  const el = document.getElementById("price-chart");
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const col = {
+    ink: css("--ink"), muted: css("--muted"), line: css("--line"), surface: css("--surface"),
+    accent: css("--accent"), up: css("--good"), down: css("--bad"), profit: css("--profit"), loss: css("--loss"),
+  };
+  const chart = LightweightCharts.createChart(el, {
+    autoSize: true,
+    layout: { background: { color: col.surface }, textColor: col.muted, fontFamily: "Inter, system-ui, sans-serif" },
+    grid: { vertLines: { color: col.line }, horzLines: { color: col.line } },
+    rightPriceScale: { borderColor: col.line },
+    timeScale: { borderColor: col.line, timeVisible: true, secondsVisible: false },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  });
+  // Up candles hollow, down candles filled, so direction doesn't rely on colour alone.
+  const series = chart.addCandlestickSeries({
+    upColor: "rgba(0,0,0,0)", borderUpColor: col.up, wickUpColor: col.up,
+    downColor: col.down, borderDownColor: col.down, wickDownColor: col.down,
+    priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+  });
+  series.setData(data.candles.map(c => ({ time: c[0], open: c[1], high: c[2], low: c[3], close: c[4] })));
+  const S = LightweightCharts.LineStyle;
+  const style = {
+    range: { color: col.muted, lineStyle: S.Dashed, lineWidth: 1 },
+    trigger: { color: col.accent, lineStyle: S.Dashed, lineWidth: 2 },
+    entry: { color: col.ink, lineStyle: S.Solid, lineWidth: 2 },
+    sl: { color: col.loss, lineStyle: S.Solid, lineWidth: 2 },
+    tp: { color: col.profit, lineStyle: S.Solid, lineWidth: 2 },
+  };
+  data.levels.forEach(l => series.createPriceLine({ price: l.price, title: l.title, axisLabelVisible: true, ...style[l.kind] }));
+  const mcol = { entry: col.accent, tp: col.profit, sl: col.loss, strategy: col.muted };
+  series.setMarkers(data.markers.map(m => ({ time: m.time, position: m.position, shape: m.shape, color: mcol[m.kind], text: m.text })));
+  chart.timeScale().fitContent();
+})();
+</script>
+{% endif %}
+{% endblock %}

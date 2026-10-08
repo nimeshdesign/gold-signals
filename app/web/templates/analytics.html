@@ -126,7 +126,7 @@
 <p class="small muted">{{ table_total }} signals{% if table_total > table|length %}, newest {{ table|length }} shown{% endif %}.</p>
 <div class="table-wrap">
   <table>
-    <thead><tr><th>Sent (India time)</th><th>Side</th><th class="num">Entry</th><th class="num">Stop loss</th><th class="num">TP1</th><th class="num">TP2</th><th>Outcome</th><th class="num">Result</th><th class="num">Hours</th></tr></thead>
+    <thead><tr><th>Sent (India time)</th><th>Side</th><th class="num">Entry</th><th class="num">Stop loss</th><th class="num">TP1</th><th class="num">TP2</th><th>Outcome</th><th class="num">Result</th><th class="num">Hours</th><th></th></tr></thead>
     <tbody>{% for t in table %}
       <tr>
         <td>{{ t.sent_ist.strftime("%d %b %Y %I:%M %p") }}</td><td>{{ t.direction }}</td>
@@ -135,6 +135,7 @@
         <td><span class="chip {{ t.kind }} small-chip"><span aria-hidden="true">{{ "●" if t.kind == "good" else "✕" }}</span> {{ t.outcome }}</span></td>
         <td class="num {{ 'pos' if t.result_r > 0 else ('neg' if t.result_r < 0 else '') }}">{{ "%+.2fR"|format(t.result_r) }}</td>
         <td class="num">{{ t.hours }}</td>
+        <td><a href="/chart?src={{ src }}&amp;signal={{ t.id }}">Chart</a></td>
       </tr>
     {% endfor %}</tbody>
   </table>

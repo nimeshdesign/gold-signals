@@ -192,3 +192,21 @@ nav form { display: inline; }
 .nav-btn { border: 0; background: none; font: inherit; font-size: 15px; color: var(--ink-2); cursor: pointer; margin-left: 20px; padding: 0; }
 .nav-btn:hover { color: var(--ink); }
 @media (max-width: 560px) { .nav-btn { margin-left: 0; } }
+
+/* chart page */
+.day-nav { display: inline-flex; align-items: stretch; gap: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.day-nav .btn-edge { border-right: 1px solid var(--line); }
+.day-nav .btn-edge:last-child { border-right: 0; border-left: 1px solid var(--line); }
+.day-nav input[type=date] { font: inherit; font-size: 14px; border: 0; padding: 6px 10px; background: transparent; color: var(--ink); }
+.chart-day { margin-top: 8px; }
+.chart-card { padding: 16px; }
+#price-chart { width: 100%; height: 460px; }
+@media (max-width: 560px) { #price-chart { height: 340px; } }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; list-style: none; padding: 0; margin: 12px 0 4px; color: var(--ink-2); }
+.legend li { display: flex; align-items: center; gap: 6px; }
+.key { display: inline-block; width: 22px; height: 0; border-top: 2px solid; }
+.key-range { border-top: 2px dashed var(--muted); }
+.key-trigger { border-top: 2px dashed var(--accent); }
+.key-entry { border-color: var(--ink); }
+.key-sl { border-color: var(--loss); }
+.key-tp { border-color: var(--profit); }
