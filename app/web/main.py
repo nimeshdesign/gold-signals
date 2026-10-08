@@ -47,7 +47,7 @@ templates.env.globals.update(brand=settings.brand_name, symbol=settings.display_
                              payments_enabled=bool(settings.stripe_secret_key and settings.stripe_price_id),
                              sp={**DEFAULT_PARAMS.get(settings.strategy_name, {}), **settings.strategy_params},
                              params=settings.strategy, news_before=settings.news_block_before,
-                             news_after=settings.news_block_after)
+                             news_after=settings.news_block_after, pip_size=settings.pip_size)
 
 
 def _fmt_dt(value: str | None) -> str:

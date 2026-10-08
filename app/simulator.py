@@ -27,8 +27,12 @@ class SimConfig:
     expiry_hours: float = 48
 
 
-def simulate(signals: pd.DataFrame, m15: pd.DataFrame, cfg: SimConfig) -> pd.DataFrame:
-    """Run every signal through the trade rules. Returns one row per closed trade."""
+def simulate(signals: pd.DataFrame, m15: pd.DataFrame, cfg: SimConfig, bar: pd.Timedelta = BAR) -> pd.DataFrame:
+    """Run every signal through the trade rules. Returns one row per closed trade.
+
+    `m15` is the candle series used to manage trades. Pass 1-minute candles with bar=1 minute to resolve
+    tight stops/targets that a single 15-minute candle can't order (signals still come from 15-min closes).
+    """
     sig = signals[signals["signal"] != 0]
     by_time = {row.close_time: row for row in sig.itertuples()}
     highs, lows, closes = m15["high"].to_numpy(), m15["low"].to_numpy(), m15["close"].to_numpy()
@@ -38,7 +42,7 @@ def simulate(signals: pd.DataFrame, m15: pd.DataFrame, cfg: SimConfig) -> pd.Dat
     open_trades: list[tuple] = []
     out = []
     for i in range(len(m15)):
-        bar_close = times[i] + BAR
+        bar_close = times[i] + bar
         still = []
         for row, st in open_trades:
             shift = cfg.spread if st.direction == "SELL" else 0.0

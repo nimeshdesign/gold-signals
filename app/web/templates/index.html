@@ -29,7 +29,11 @@
   </div>
   <div class="card">
     <h3>Stop and targets</h3>
+    {% if sp.sl_fixed %}
+    <p class="muted">Fixed stop loss of {{ "%.0f"|format(sp.sl_fixed / pip_size) }} pips. TP1 at {{ "%.0f"|format(sp.sl_fixed * params.tp1_r / pip_size) }} pips, TP2 at {{ "%.0f"|format(sp.sl_fixed * params.tp2_r / pip_size) }} pips. Half closes at TP1 and the stop moves to entry.</p>
+    {% else %}
     <p class="muted">Stop loss is the width of the range, kept within sensible limits of current volatility. TP1 at {{ params.tp1_r }}R, TP2 at {{ params.tp2_r }}R. Half closes at TP1 and the stop moves to entry.</p>
+    {% endif %}
   </div>
 {% else %}
   <div class="card">

@@ -117,6 +117,31 @@ def test_daily_plan_message_includes_planned_levels():
     assert "SL ~<code>4,142.51</code>" in text and "TP1 ~<code>4,068.67</code>" in text and "TP2 ~<code>3,994.83</code>" in text
 
 
+def test_signal_message_shows_pips_and_lot_money(monkeypatch):
+    from app import telegram_bot
+    from app.config import settings
+
+    monkeypatch.setattr(telegram_bot, "_settings", lambda: settings)
+    import app.config as cfg
+
+    monkeypatch.setattr(cfg, "settings", SimpleNamespace(**{**vars(settings), "pip_size": 0.10,
+                                                            "contract_oz": 100, "lot_size": 0.20}))
+    text = telegram_bot.format_signal("XAUUSD", "SELL", 4105.59, 4115.59, 4095.59, 4075.59, 1.0, 3.0)
+    assert "SL: <code>4,115.59</code> (100 pips)" in text
+    assert "TP1: <code>4,095.59</code> (100 pips, 1R)" in text
+    assert "TP2: <code>4,075.59</code> (300 pips, 3R)" in text
+    assert "At 0.2 lot: risk $200 · TP1 +$200 · TP2 +$600" in text
+
+
+def test_fixed_pip_stop_overrides_range_stop():
+    from app.strategies import build_data, compute_signals
+
+    m15 = _candles(40)
+    s = compute_signals("session_breakout", build_data(m15), {**PARAMS, "sl_fixed": 10.0})
+    fired = s[s["signal"] != 0]
+    assert len(fired) and (fired["sl_dist"] == 10.0).all()
+
+
 def test_weekend_has_no_view(conn_with_data):
     path, _, _ = conn_with_data
     with db.session(path) as conn:

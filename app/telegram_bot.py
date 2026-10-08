@@ -79,19 +79,34 @@ def _p(x: float) -> str:
 
 def format_signal(symbol: str, direction: str, entry: float, sl: float, tp1: float, tp2: float,
                   tp1_r: float, tp2_r: float) -> str:
+    from .config import settings
+
     icon = "🟢" if direction == "BUY" else "🔴"
     risk = abs(entry - sl)
-    return (
-        f"{icon} <b>{html.escape(symbol)} {direction}</b>\n\n"
-        f"Entry: <code>{_p(entry)}</code>\n"
-        f"SL: <code>{_p(sl)}</code>\n"
-        f"TP1: <code>{_p(tp1)}</code> ({tp1_r:g}R)\n"
-        f"TP2: <code>{_p(tp2)}</code> ({tp2_r:g}R)\n\n"
-        f"Risk per ounce: ${_p(risk)}\n"
-        f"Plan: close half at TP1 and move SL to entry.\n"
-        f"Risk no more than 1–2% of your account per trade.\n\n"
-        f"<i>Not financial advice.</i>"
-    )
+
+    def pips(a: float, b: float) -> str:
+        return f"{abs(a - b) / settings.pip_size:,.0f} pips"
+
+    lines = [
+        f"{icon} <b>{html.escape(symbol)} {direction}</b>",
+        "",
+        f"Entry: <code>{_p(entry)}</code>",
+        f"SL: <code>{_p(sl)}</code> ({pips(entry, sl)})",
+        f"TP1: <code>{_p(tp1)}</code> ({pips(tp1, entry)}, {tp1_r:g}R)",
+        f"TP2: <code>{_p(tp2)}</code> ({pips(tp2, entry)}, {tp2_r:g}R)",
+        "",
+    ]
+    if settings.lot_size:
+        oz = settings.lot_size * settings.contract_oz
+        lines.append(f"At {settings.lot_size:g} lot: risk ${risk * oz:,.0f} · TP1 +${abs(tp1 - entry) * oz:,.0f}"
+                     f" · TP2 +${abs(tp2 - entry) * oz:,.0f}")
+    lines += [
+        "Plan: close half at TP1 and move SL to entry.",
+        "Risk no more than 1–2% of your account per trade.",
+        "",
+        "<i>Not financial advice.</i>",
+    ]
+    return "\n".join(lines)
 
 
 def format_update(event: str, direction: str, symbol: str, result_r: float | None) -> str:
@@ -111,6 +126,12 @@ def _local(ts, fmt: str = "%I:%M %p") -> str:
 
     t = pd.Timestamp(ts).tz_convert("UTC") + pd.Timedelta(hours=settings.display_tz_offset)
     return f"{t.strftime(fmt).lstrip('0')} {settings.display_tz_name}"
+
+
+def _settings():
+    from .config import settings
+
+    return settings
 
 
 def _hour_local(hour_utc: int) -> str:
@@ -139,7 +160,7 @@ def format_daily_plan(symbol: str, snap: dict, now, events) -> str:
             "",
             "🎯 If it triggers (approx.):",
             f"SL ~<code>{_p(plan['sl'])}</code> · TP1 ~<code>{_p(plan['tp1'])}</code> · TP2 ~<code>{_p(plan['tp2'])}</code>",
-            f"<i>Risk about ${_p(plan['risk'])}/oz. Exact levels come with the signal.</i>",
+            f"<i>Stop {plan['risk'] / _settings().pip_size:,.0f} pips. Exact levels come with the signal.</i>",
         ]
     if events:
         lines += ["", "⚠️ High-impact USD news today (no new signals 30 min either side):"]

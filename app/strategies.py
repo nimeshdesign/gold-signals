@@ -153,6 +153,9 @@ def session_breakout(data, p) -> pd.DataFrame:
     width = hi - lo
     atr_h = htf_series(df, "15min", data["1h"], "1h", atr(data["1h"], 14))
     sl = (width * p["range_frac"]).clip(lower=atr_h * 0.5, upper=atr_h * p["atr_cap"])
+    if p.get("sl_fixed"):
+        # Fixed stop distance in $ (e.g. 10.0 = 100 pips on XAUUSD) instead of the range-based stop.
+        sl = pd.Series(float(p["sl_fixed"]), index=df.index)
 
     up = in_window & (c > hi) & (c.shift(1) <= hi) & (trend >= 0)
     down = in_window & (c < lo) & (c.shift(1) >= lo) & (trend <= 0)

@@ -101,6 +101,11 @@ class Settings:
     news_fail_closed: bool = field(default_factory=lambda: _bool("NEWS_FAIL_CLOSED", False))
 
     dry_run: bool = field(default_factory=lambda: _bool("DRY_RUN", True))
+    # Pip and lot maths shown in signals (XAUUSD: 1 pip = $0.10, 1 standard lot = 100 oz).
+    pip_size: float = field(default_factory=lambda: _float("PIP_SIZE", 0.10))
+    contract_oz: float = field(default_factory=lambda: _float("CONTRACT_SIZE_OZ", 100))
+    # Your usual lot size; signals show the $ risk and reward at this size (0 = don't show).
+    lot_size: float = field(default_factory=lambda: _float("LOT_SIZE", 0))
     # Daily plan / day-end / weekly summary messages in the channel.
     daily_updates: bool = field(default_factory=lambda: _bool("DAILY_UPDATES", True))
     # Local time shown in Telegram messages (default India Standard Time).
