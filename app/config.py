@@ -95,6 +95,11 @@ class Settings:
     news_fail_closed: bool = field(default_factory=lambda: _bool("NEWS_FAIL_CLOSED", False))
 
     dry_run: bool = field(default_factory=lambda: _bool("DRY_RUN", True))
+    # Daily plan / day-end / weekly summary messages in the channel.
+    daily_updates: bool = field(default_factory=lambda: _bool("DAILY_UPDATES", True))
+    # Local time shown in Telegram messages (default India Standard Time).
+    display_tz_offset: float = field(default_factory=lambda: _float("DISPLAY_TZ_OFFSET_HOURS", 5.5))
+    display_tz_name: str = field(default_factory=lambda: _str("DISPLAY_TZ_NAME", "IST"))
 
     strategy: StrategyParams = field(default_factory=StrategyParams.from_env)
     # Which rules the engine runs (see app/strategies.py) and their settings as JSON.

@@ -27,7 +27,8 @@ from .news import NewsFilter
 from .outcome import TradeState, expire, step
 from .strategies import DEFAULT_PARAMS, build_data, compute_signals
 from .strategy import interval_to_timedelta
-from .telegram_bot import TelegramClient, TelegramError, format_signal, format_update
+from .telegram_bot import (TelegramClient, TelegramError, format_daily_plan, format_day_end, format_signal,
+                           format_update, format_week_summary)
 
 log = logging.getLogger("engine")
 
@@ -64,11 +65,52 @@ class Engine:
         with db.session() as conn:
             self.track_open_signals(conn, m15)
             signals = self.check_for_signal(conn, data)
+            snap = None
             try:
-                db.kv_set(conn, "engine_status", json.dumps(self.status_snapshot(data, signals)))
+                snap = self.status_snapshot(data, signals)
+                db.kv_set(conn, "engine_status", json.dumps(snap))
             except Exception:
                 log.exception("Could not save status snapshot")
             db.kv_set(conn, "engine_heartbeat", _iso(pd.Timestamp.now(tz="UTC")))
+            if snap and settings.daily_updates and self.strategy_name == "session_breakout":
+                try:
+                    self.send_daily_updates(conn, snap)
+                except Exception as exc:
+                    log.exception("Daily update failed")
+                    _record_error(f"Daily Telegram update failed: {exc!r}")
+
+    def send_daily_updates(self, conn, snap: dict, now: pd.Timestamp | None = None) -> None:
+        """Daily plan when the range is set, a day-end note, and a Friday weekly summary. Each sent once."""
+        now = now or pd.Timestamp.now(tz="UTC")
+        if now.weekday() >= 5:
+            return
+        day = now.strftime("%Y-%m-%d")
+        rng = snap["range"]
+        chat = settings.telegram_channel_id
+
+        if (rng["end"] <= now.hour < rng["window_end"] and rng["high"] is not None
+                and db.kv_get(conn, "plan_sent") != day):
+            events = self.news.events_between(now.normalize(), now.normalize() + pd.Timedelta(days=1)) \
+                if settings.news_filter_enabled else []
+            self.tg.send_message(chat, format_daily_plan(settings.display_symbol, snap, now, events))
+            db.kv_set(conn, "plan_sent", day)
+            log.info("Sent daily plan")
+
+        if now.hour >= rng["window_end"] and db.kv_get(conn, "plan_sent") == day and db.kv_get(conn, "dayend_sent") != day:
+            today_rows = conn.execute("SELECT * FROM signals WHERE created_at >= ? ORDER BY id",
+                                      (_iso(now.normalize()),)).fetchall()
+            self.tg.send_message(chat, format_day_end(settings.display_symbol, snap, today_rows))
+            db.kv_set(conn, "dayend_sent", day)
+            log.info("Sent day-end update")
+
+            week = now.strftime("%G-W%V")
+            if now.weekday() == 4 and db.kv_get(conn, "week_sent") != week:
+                monday = now.normalize() - pd.Timedelta(days=now.weekday())
+                week_rows = conn.execute("SELECT * FROM signals WHERE created_at >= ? ORDER BY id",
+                                         (_iso(monday),)).fetchall()
+                self.tg.send_message(chat, format_week_summary(settings.display_symbol, week_rows, monday))
+                db.kv_set(conn, "week_sent", week)
+                log.info("Sent weekly summary")
 
     def status_snapshot(self, data: dict[str, pd.DataFrame], signals: pd.DataFrame) -> dict:
         """What the strategy sees right now, for the owner's status page."""
@@ -98,6 +140,11 @@ class Engine:
         if self.strategy_name == "session_breakout":
             day = m15[m15.index >= today]
             rng = day[(day.index.hour >= p["range_start"]) & (day.index.hour < p["range_end"])]
+            after = day[(day.index.hour >= p["range_end"]) & (day.index.hour < p["window_end"])]
+            snap["window_moves"] = None if after.empty else {
+                "high": round(float(after["high"].max()), 2), "low": round(float(after["low"].min()), 2),
+                "close_high": round(float(after["close"].max()), 2), "close_low": round(float(after["close"].min()), 2),
+            }
             snap["range"] = {
                 "start": p["range_start"], "end": p["range_end"], "window_end": p["window_end"],
                 "high": round(float(rng["high"].max()), 2) if len(rng) else None,

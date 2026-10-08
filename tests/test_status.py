@@ -59,6 +59,42 @@ def test_engine_saves_status_snapshot(tmp_db):
     assert "signal_today" in snap
 
 
+def test_daily_updates_sent_once_each(tmp_db, monkeypatch):
+    from app import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "settings", SimpleNamespace(**{**vars(engine_mod.settings),
+                                                                   "news_filter_enabled": False}))
+    sent = []
+
+    class FakeTG:
+        dry_run = False
+
+        def send_message(self, chat, text, reply_to=None):
+            sent.append(text)
+            return len(sent)
+
+    eng = Engine(feed=object(), telegram=FakeTG(), news=QuietNews())
+    snap = {"price": 4116.31, "trend": {"direction": "DOWN", "close": 4109.71, "ema": 4214.13},
+            "range": {"start": 0, "end": 6, "window_end": 16, "high": 4142.51, "low": 4105.59},
+            "window_moves": {"high": 4122.62, "low": 4115.06, "close_high": 4120.8, "close_low": 4116.31},
+            "skip_note": None}
+    friday = pd.Timestamp("2026-10-09", tz="UTC")
+    with db.session(tmp_db) as conn:
+        eng.send_daily_updates(conn, snap, friday + pd.Timedelta(hours=5))   # before range ends: nothing
+        assert sent == []
+        eng.send_daily_updates(conn, snap, friday + pd.Timedelta(hours=6, minutes=1))
+        eng.send_daily_updates(conn, snap, friday + pd.Timedelta(hours=9))   # same day: no repeat
+        assert len(sent) == 1 and "daily plan" in sent[0]
+        assert "SELL" in sent[0] and "below <code>4,105.59</code>" in sent[0] and "9:30 PM IST" in sent[0]
+        eng.send_daily_updates(conn, snap, friday + pd.Timedelta(hours=16, minutes=1))
+        eng.send_daily_updates(conn, snap, friday + pd.Timedelta(hours=17))
+        assert len(sent) == 3  # day end + Friday weekly summary, once
+        assert "No signal today" in sent[1] and "4,115.06 and 4,122.62" in sent[1]
+        assert "week of 05 Oct" in sent[2] and "No signals this week" in sent[2]
+        eng.send_daily_updates(conn, snap, friday + pd.Timedelta(days=1, hours=7))  # Saturday: nothing
+        assert len(sent) == 3
+
+
 def test_status_page_renders_empty_and_with_data(tmp_db):
     from app.web.main import app
 

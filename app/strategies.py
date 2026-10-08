@@ -156,11 +156,45 @@ def session_breakout(data, p) -> pd.DataFrame:
     return _output(df, "15min", signal, sl)
 
 
+def orb(data, p) -> pd.DataFrame:
+    """New York opening-range breakout (Zarattini & Aziz style), at most one trade per day.
+
+    Times are New York local, so the range follows US daylight saving. Range = high/low of the 15-min
+    candles from open_hm ("HH:MM") for range_min minutes. The first 15-min close beyond the range before
+    window_end (NY hour) triggers the entry, optionally only in the daily-EMA trend direction.
+    Stop = range width * range_frac, kept between 0.5 and atr_cap hourly ATRs.
+    """
+    df = data["15min"]
+    local = df.index.tz_convert("America/New_York")
+    h, m = map(int, p["open_hm"].split(":"))
+    minute = local.hour * 60 + local.minute
+    start = h * 60 + m
+    day = pd.Index(local.date)
+    in_range = (minute >= start) & (minute < start + p["range_min"])
+    rng = df[in_range].groupby(day[in_range]).agg(hi=("high", "max"), lo=("low", "min"))
+    hi = pd.Series(day, index=df.index).map(rng["hi"])
+    lo = pd.Series(day, index=df.index).map(rng["lo"])
+    in_window = (minute >= start + p["range_min"]) & (local.hour < p["window_end"])
+    c = df["close"]
+    trend = _trend(data, "15min", p["trend_tf"], p["trend_len"]) if p.get("trend_len") else pd.Series(0, index=df.index)
+
+    up = in_window & (c > hi) & (trend >= 0)
+    down = in_window & (c < lo) & (trend <= 0)
+    raw = up.astype(int) - down.astype(int)
+    first = raw.ne(0) & ~raw.ne(0).groupby(day).cumsum().gt(1).to_numpy()
+    signal = raw.where(first, 0)
+
+    atr_h = htf_series(df, "15min", data["1h"], "1h", atr(data["1h"], 14))
+    sl = ((hi - lo) * p["range_frac"]).clip(lower=atr_h * 0.5, upper=atr_h * p["atr_cap"])
+    return _output(df, "15min", signal, sl)
+
+
 STRATEGIES: dict[str, Callable] = {
     "ema_cross": ema_cross,
     "trend_pullback": trend_pullback,
     "rsi2_reversion": rsi2_reversion,
     "session_breakout": session_breakout,
+    "orb": orb,
 }
 
 DEFAULT_PARAMS: dict[str, dict] = {
@@ -170,6 +204,8 @@ DEFAULT_PARAMS: dict[str, dict] = {
     "rsi2_reversion": {"tf": "1h", "trend_tf": "1day", "trend_len": 50, "slow": 50, "rsi_lo": 10, "atr_mult": 2.0},
     "session_breakout": {"range_start": 0, "range_end": 7, "window_end": 16, "trend_tf": "1day", "trend_len": 20,
                          "range_frac": 1.0, "atr_cap": 3},
+    "orb": {"open_hm": "08:15", "range_min": 30, "window_end": 12, "trend_tf": "1day", "trend_len": 20,
+            "range_frac": 1.0, "atr_cap": 3},
 }
 
 

@@ -57,6 +57,11 @@ class NewsFilter:
             log.warning("News calendar fetch failed: %s", exc)
             self._fetched_at = time.time() - CACHE_SECONDS + 300
 
+    def events_between(self, start: datetime, end: datetime) -> list[NewsEvent]:
+        """High-impact events in [start, end), e.g. today's, for the daily plan message."""
+        self._refresh()
+        return sorted((e for e in self._events or [] if start <= e.time < end), key=lambda e: e.time)
+
     def blocking_event(self, now: datetime | None = None) -> NewsEvent | None:
         """The event that blocks trading right now, or None if signals are allowed."""
         now = now or datetime.now(timezone.utc)

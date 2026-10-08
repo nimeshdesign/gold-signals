@@ -13,6 +13,8 @@ PARAMS = {
     "rsi2_reversion": {"tf": "1h", "trend_tf": "1day", "trend_len": 5, "slow": 20, "rsi_lo": 15, "atr_mult": 2.0},
     "session_breakout": {"range_start": 0, "range_end": 7, "window_end": 16, "trend_tf": "1day", "trend_len": 5,
                          "range_frac": 1.0, "atr_cap": 3},
+    "orb": {"open_hm": "08:15", "range_min": 30, "window_end": 12, "trend_tf": "1day", "trend_len": 5,
+            "range_frac": 1.0, "atr_cap": 3},
 }
 
 

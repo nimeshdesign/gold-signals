@@ -41,6 +41,8 @@ SEARCH = {
                                 slow=[50, 200], rsi_lo=[5, 10, 15], atr_mult=[2.0, 3.0])),
     "session_breakout": list(grid(range_start=[0], range_end=[6, 7], window_end=[12, 16],
                                   trend_tf=["1day"], trend_len=[0, 20], range_frac=[0.5, 1.0], atr_cap=[2, 3])),
+    "orb": list(grid(open_hm=["08:15", "09:30"], range_min=[15, 30, 60], window_end=[11, 13, 15],
+                     trend_tf=["1day"], trend_len=[0, 20], range_frac=[0.5, 1.0], atr_cap=[2, 3])),
 }
 # ema_cross needs fast < slow
 SEARCH["ema_cross"] = [p for p in SEARCH["ema_cross"] if p["fast"] < p["slow"]]
@@ -58,6 +60,7 @@ def main() -> None:
     ap.add_argument("--spread", type=float, default=0.30)
     ap.add_argument("--min-trades", type=int, default=80)
     ap.add_argument("--out", default=str(ROOT / "data" / "research_results.csv"))
+    ap.add_argument("--only", nargs="+", choices=list(SEARCH), help="research only these strategies")
     args = ap.parse_args()
 
     m15 = load_csv(args.csv)
@@ -66,6 +69,8 @@ def main() -> None:
     rows, t0 = [], time.time()
 
     for name, param_sets in SEARCH.items():
+        if args.only and name not in args.only:
+            continue
         for params in param_sets:
             signals = compute_signals(name, data, params)
             for tp1, tp2 in TARGETS:
