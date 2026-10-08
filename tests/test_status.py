@@ -98,7 +98,10 @@ def test_daily_updates_sent_once_each(tmp_db, monkeypatch):
 def test_status_page_renders_empty_and_with_data(tmp_db):
     from app.web.main import app
 
+    from app.web import auth, main
+
     with TestClient(app) as client:
+        client.cookies.set(auth.COOKIE, auth.make_session("admin", main._secret(), 3600))
         r = client.get("/status")
         assert r.status_code == 200
         assert "Waiting for first check" in r.text and "No signals yet" in r.text

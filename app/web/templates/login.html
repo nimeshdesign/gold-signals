@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in · {{ brand }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page">
+  <main class="login-wrap">
+    <div class="login-card">
+      <div class="logo login-logo"><span class="logo-mark" aria-hidden="true"></span>{{ brand }}</div>
+      <h1>Sign in</h1>
+      <p class="muted small">Private dashboard. Authorised access only.</p>
+
+      {% if error %}<div class="login-error" role="alert">{{ error }}</div>{% endif %}
+
+      <form method="post" action="/login" autocomplete="on">
+        <input type="hidden" name="next" value="{{ next }}">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none"
+               spellcheck="false" required value="{{ username or '' }}" {{ 'autofocus' if not username }}>
+
+        <label for="password">Password</label>
+        <div class="pw-field">
+          <input id="password" name="password" type="password" autocomplete="current-password" required
+                 {{ 'autofocus' if username }}>
+          <button type="button" class="pw-toggle" aria-controls="password" aria-pressed="false">Show</button>
+        </div>
+
+        <label class="remember"><input type="checkbox" name="remember" value="1" checked> Keep me signed in for 30 days</label>
+        <p class="small muted remember-hint">Untick on a shared or public computer.</p>
+
+        <button class="btn login-btn" type="submit">Sign in</button>
+      </form>
+    </div>
+    <p class="small muted login-foot">Too many wrong attempts lock sign-in for 15 minutes.</p>
+  </main>
+  <script>
+    const btn = document.querySelector(".pw-toggle"), pw = document.getElementById("password");
+    btn.addEventListener("click", () => {
+      const show = pw.type === "password";
+      pw.type = show ? "text" : "password";
+      btn.textContent = show ? "Hide" : "Show";
+      btn.setAttribute("aria-pressed", String(show));
+      pw.focus();
+    });
+  </script>
+</body>
+</html>

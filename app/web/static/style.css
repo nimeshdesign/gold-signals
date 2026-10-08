@@ -164,3 +164,31 @@ footer.site a { color: var(--muted); }
 .small-chip { font-size: 13px; font-weight: 500; }
 .table-wrap.flat { border: 0; }
 details summary { cursor: pointer; color: var(--accent); }
+
+/* login */
+.login-page { min-height: 100vh; display: flex; }
+.login-wrap { margin: auto; width: 100%; max-width: 400px; padding: 32px 16px; }
+.login-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 32px 28px; }
+.login-logo { margin-bottom: 24px; }
+.login-card h1 { font-size: 26px; margin: 0 0 4px; }
+.login-card form { display: grid; gap: 6px; margin-top: 20px; }
+.login-card label { font-size: 14px; font-weight: 600; margin-top: 10px; }
+.login-card input[type=text], .login-card input[type=password] {
+  font: inherit; width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink);
+}
+.login-card input:focus-visible, .pw-toggle:focus-visible, .login-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pw-field { position: relative; }
+.pw-field input { padding-right: 68px; }
+.pw-toggle { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: transparent;
+  color: var(--accent); font: inherit; font-size: 14px; font-weight: 600; padding: 6px 8px; cursor: pointer; }
+.login-card .remember { display: flex; align-items: center; gap: 8px; font-weight: 400; margin-top: 14px; }
+.remember-hint { margin: 0 0 8px 24px; }
+.login-btn { width: 100%; padding: 12px; margin-top: 6px; }
+.login-error { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); border-radius: 8px;
+  padding: 10px 12px; font-size: 14px; font-weight: 600; margin-top: 16px; }
+.login-foot { text-align: center; margin-top: 16px; }
+nav form { display: inline; }
+.nav-btn { border: 0; background: none; font: inherit; font-size: 15px; color: var(--ink-2); cursor: pointer; margin-left: 20px; padding: 0; }
+.nav-btn:hover { color: var(--ink); }
+@media (max-width: 560px) { .nav-btn { margin-left: 0; } }

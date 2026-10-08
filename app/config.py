@@ -76,6 +76,12 @@ class Settings:
     telegram_channel_id: str = field(default_factory=lambda: _str("TELEGRAM_CHANNEL_ID"))
     telegram_public_channel_id: str = field(default_factory=lambda: _str("TELEGRAM_PUBLIC_CHANNEL_ID"))
 
+    # Owner login for the website (hash made with: python -m scripts.set_password).
+    admin_username: str = field(default_factory=lambda: _str("ADMIN_USERNAME", "admin"))
+    admin_password_hash: str = field(default_factory=lambda: _str("ADMIN_PASSWORD_HASH"))
+    # Signs login cookies. Keep it secret; changing it signs everyone out.
+    session_secret: str = field(default_factory=lambda: _str("SESSION_SECRET"))
+
     stripe_secret_key: str = field(default_factory=lambda: _str("STRIPE_SECRET_KEY"))
     stripe_webhook_secret: str = field(default_factory=lambda: _str("STRIPE_WEBHOOK_SECRET"))
     stripe_price_id: str = field(default_factory=lambda: _str("STRIPE_PRICE_ID"))

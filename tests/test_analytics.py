@@ -58,7 +58,10 @@ def test_page_live_empty_and_backtest(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "settings", SimpleNamespace(**{**vars(main.settings), "database_path": empty,
                                                              "backtest_database_path": path}))
     monkeypatch.setattr(db, "settings", SimpleNamespace(database_path=empty))
+    from app.web import auth
+
     with TestClient(main.app) as client:
+        client.cookies.set(auth.COOKIE, auth.make_session("admin", main._secret(), 3600))
         r = client.get("/analytics")
         assert r.status_code == 200 and "No closed live signals yet" in r.text
         r = client.get("/analytics?src=backtest")

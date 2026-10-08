@@ -2,12 +2,15 @@
 
 Run:  uvicorn app.web.main:app --host 0.0.0.0 --port 8000
 """
+import hmac
 import json
 import logging
+import secrets
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -18,7 +21,7 @@ from .. import db
 from ..config import settings
 from ..strategies import DEFAULT_PARAMS
 from ..telegram_bot import TelegramClient, TelegramError
-from . import analytics
+from . import analytics, auth
 from .payments import Stripe, StripeError, verify_webhook
 from .stats import compute_stats
 
@@ -65,6 +68,86 @@ def stripe() -> Stripe:
         return Stripe(settings.stripe_secret_key)
     except StripeError as exc:
         raise HTTPException(503, "Payments are not configured yet") from exc
+
+
+# ---------- owner login ----------
+
+# Reachable without signing in: the login page itself, health checks, Stripe's server-to-server
+# webhook, and the stylesheet the login page needs.
+OPEN_PATHS = {"/login", "/healthz", "/stripe/webhook"}
+REMEMBER_SECONDS = 30 * 24 * 3600
+SESSION_SECONDS = 12 * 3600
+limiter = auth.LoginLimiter()
+# Without SESSION_SECRET in .env, sessions still work but end whenever the website restarts.
+_fallback_secret = secrets.token_hex(32)
+
+
+def _secret() -> str:
+    return settings.session_secret or _fallback_secret
+
+
+def current_user(request: Request) -> str | None:
+    return auth.read_session(request.cookies.get(auth.COOKIE), _secret())
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    if path in OPEN_PATHS or path.startswith("/static/") or current_user(request):
+        return await call_next(request)
+    if request.method == "GET":
+        target = path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(f"/login?next={quote(target)}", status_code=303)
+    return JSONResponse({"detail": "Sign in required"}, status_code=401)
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request, next: str = "/"):
+    if current_user(request):
+        return RedirectResponse(auth.safe_next(next), status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"next": auth.safe_next(next), "error": None})
+
+
+@app.post("/login", response_class=HTMLResponse)
+def login(request: Request, username: str = Form(""), password: str = Form(""),
+          remember: str = Form(""), next: str = Form("/")):
+    ip = _client_ip(request)
+    target = auth.safe_next(next)
+
+    def fail(message: str, status: int):
+        return templates.TemplateResponse(request, "login.html", {"next": target, "error": message,
+                                                                  "username": username}, status_code=status)
+
+    if not settings.admin_password_hash:
+        return fail("Login isn't set up yet. Run: python -m scripts.set_password", 503)
+    locked = limiter.seconds_locked(ip)
+    if locked:
+        return fail(f"Too many wrong attempts. Try again in {locked // 60 + 1} minutes.", 429)
+    user_ok = hmac.compare_digest(username.strip().lower(), settings.admin_username.lower())
+    if not (auth.verify_password(password, settings.admin_password_hash) and user_ok):
+        limiter.failed(ip)
+        log.warning("Failed login for %r from %s", username, ip)
+        return fail("Wrong username or password.", 401)
+
+    limiter.succeeded(ip)
+    log.info("Signed in: %s from %s", settings.admin_username, ip)
+    max_age = REMEMBER_SECONDS if remember else SESSION_SECONDS
+    resp = RedirectResponse(target, status_code=303)
+    resp.set_cookie(auth.COOKIE, auth.make_session(settings.admin_username, _secret(), max_age),
+                    max_age=max_age if remember else None, httponly=True, samesite="lax",
+                    secure=settings.site_url.startswith("https://"))
+    return resp
+
+
+@app.post("/logout")
+def logout():
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(auth.COOKIE)
+    return resp
 
 
 # ---------- public pages ----------
