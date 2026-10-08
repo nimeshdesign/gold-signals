@@ -38,6 +38,7 @@ M15_BACKFILL = 5000  # Twelve Data maximum per request (~7 weeks of 15-min candl
 SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
 H1_BARS = 5000
 M15 = pd.Timedelta(minutes=15)
+M1 = pd.Timedelta(minutes=1)
 
 
 def _iso(ts) -> str:
@@ -54,6 +55,8 @@ class Engine:
         self.tp1_r = settings.strategy.tp1_r
         self.tp2_r = settings.strategy.tp2_r
         self.skip_note: str | None = None
+        self._h1: pd.DataFrame | None = None
+        self._h1_at = pd.Timestamp(0, tz="UTC")
         # Extra setups (e.g. the New York open breakout) run alongside the main strategy.
         self.extra_setups = [
             {"name": e["name"], "params": {**DEFAULT_PARAMS[e["name"]], **e.get("params", {})},
@@ -82,15 +85,24 @@ class Engine:
     # ----- one cycle -----
 
     def run_cycle(self) -> None:
-        m15 = self.feed.candles("15min", M15_BARS)
-        h1 = self.feed.candles("1h", H1_BARS)
+        with db.session() as conn:
+            m15 = self._candles(conn, "15min", M15_BARS)
+            # Hourly candles only change once an hour; reuse them in between to save data requests.
+            now = pd.Timestamp.now(tz="UTC")
+            if self._h1 is None or now.floor("1h") > self._h1_at:
+                self._h1, self._h1_at = self._candles(conn, "1h", H1_BARS), now.floor("1h")
+            h1 = self._h1
         if m15.empty or h1.empty:
             log.warning("No candles returned; skipping cycle")
             return
         data = build_data(m15, h1)
         with db.session() as conn:
             self.save_candles(conn, m15)
-            self.track_open_signals(conn, m15)
+            try:
+                self.track_live(conn, fallback=m15)
+            except Exception as exc:
+                log.exception("Trade tracking failed")
+                _record_error(f"Trade tracking failed: {exc!r}")
             signals = self.check_for_signal(conn, data)
             for setup in self.setups[1:]:
                 try:
@@ -153,7 +165,7 @@ class Engine:
         """Keep 15-min candles for the chart page. The first run backfills ~7 weeks (enough for the daily trend)."""
         try:
             if db.candle_count(conn) < M15_BACKFILL // 2:
-                history = self.feed.candles("15min", M15_BACKFILL)
+                history = self._candles(conn, "15min", M15_BACKFILL)
                 log.info("Backfilled %d candles for the chart page", db.upsert_candles(conn, history))
             db.upsert_candles(conn, m15)
         except Exception:
@@ -261,7 +273,7 @@ class Engine:
             direction=direction, entry=entry, sl=sl, tp1=tp1, tp2=tp2,
             bar_time=_iso(bar_time),
             created_at=_iso(entry_time),
-            last_checked=_iso(entry_time - M15),
+            last_checked=_iso(entry_time - M1),  # track from the first minute after entry
             strategy=setup["name"], main=setup["main"],
         )
         if signal_id is None:
@@ -279,17 +291,58 @@ class Engine:
             _record_error(f"Telegram send failed for signal #{signal_id}: {exc!r}")
         return signals
 
-    def track_open_signals(self, conn, ltf: pd.DataFrame) -> None:
+    # ----- live trade tracking -----
+
+    def _candles(self, conn, interval: str, size: int) -> pd.DataFrame:
+        """Fetch candles and count the Twelve Data request against today's budget."""
+        key = f"credits_{pd.Timestamp.now(tz='UTC'):%Y-%m-%d}"
+        db.kv_set(conn, key, str(int(db.kv_get(conn, key, "0")) + 1))
+        return self.feed.candles(interval, size)
+
+    def credits_today(self, conn) -> int:
+        return int(db.kv_get(conn, f"credits_{pd.Timestamp.now(tz='UTC'):%Y-%m-%d}", "0"))
+
+    def track_minutes(self, conn) -> int:
+        """How often to check open trades: every minute, slower once near the daily data limit."""
+        if self.credits_today(conn) >= settings.track_credit_budget:
+            return settings.track_slow_minutes
+        return settings.track_minutes
+
+    def track_live(self, conn, fallback: pd.DataFrame | None = None) -> None:
+        """Move open trades forward on 1-minute candles, so TP/SL updates go out within a minute or two."""
+        rows = db.open_signals(conn)
+        if not rows:
+            return
+        oldest = min(pd.Timestamp(r["last_checked"]) for r in rows)
+        need = int((pd.Timestamp.now(tz="UTC") - oldest) / M1) + 3
+        try:
+            m1 = self._candles(conn, "1min", max(5, min(need, 5000)))
+            bars, bar_len = m1, M1
+        except Exception as exc:
+            if fallback is None:
+                raise
+            log.warning("1-minute prices unavailable (%s); tracking on 15-minute candles", exc)
+            bars, bar_len = fallback, M15
+        if bars.empty:
+            return
+        last = bars.iloc[-1]
+        db.kv_set(conn, "live_price", json.dumps({"price": round(float(last["close"]), 2),
+                                                  "time": _iso(bars.index[-1] + bar_len)}))
+        self.track_open_signals(conn, bars, bar_len)
+
+    def track_open_signals(self, conn, ltf: pd.DataFrame, bar_len: pd.Timedelta = M15) -> None:
         now = pd.Timestamp.now(tz="UTC")
         expiry = pd.Timedelta(hours=settings.signal_expiry_hours)
         for row in db.open_signals(conn):
             state = TradeState(row["direction"], row["entry"], row["sl"], row["tp1"], row["tp2"], status=row["status"])
             last_checked = pd.Timestamp(row["last_checked"])
             new_bars = ltf[ltf.index > last_checked]
+            # A SELL closes at the ask: compare its stop/targets with chart price + spread, like a broker does.
+            shift = settings.live_spread if row["direction"] == "SELL" else 0.0
             updates: dict = {}
             for bar_time, bar in new_bars.iterrows():
-                for event in step(state, bar["high"], bar["low"]):
-                    when = _iso(bar_time + M15)
+                for event in step(state, bar["high"] + shift, bar["low"] + shift):
+                    when = _iso(bar_time + bar_len)
                     if event == "tp1":
                         updates["tp1_hit_at"] = when
                     else:
@@ -299,7 +352,7 @@ class Engine:
                 if state.is_closed:
                     break
             if not state.is_closed and now - pd.Timestamp(row["created_at"]) > expiry and not ltf.empty:
-                expire(state, float(ltf["close"].iloc[-1]))
+                expire(state, float(ltf["close"].iloc[-1]) + shift)
                 updates["closed_at"] = _iso(now)
                 self._announce(row, "expired", state.result_r)
             if updates:
@@ -405,9 +458,20 @@ def main() -> None:
             except Exception as exc:
                 log.exception("Cycle failed")
                 _record_error(f"Cycle failed: {exc!r}")
-            wait = seconds_until_next_bar("15min")
-            log.info("Next check in %.0fs", wait)
-            time.sleep(wait)
+            next_cycle = time.time() + seconds_until_next_bar("15min")
+            log.info("Next check in %.0fs", next_cycle - time.time())
+            # Between 15-minute signal checks, follow open trades on 1-minute prices.
+            while time.time() < next_cycle:
+                pause = 60.0
+                try:
+                    with db.session() as conn:
+                        if db.open_signals(conn):
+                            engine.track_live(conn)
+                            pause = 60.0 * engine.track_minutes(conn)
+                except Exception as exc:
+                    log.exception("Live tracking failed")
+                    _record_error(f"Live tracking failed: {exc!r}")
+                time.sleep(max(1.0, min(pause, next_cycle - time.time())))
     except KeyboardInterrupt:
         stop.set()
         log.info("Stopped")

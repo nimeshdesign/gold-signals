@@ -214,3 +214,15 @@ nav form { display: inline; }
 .key-plan-tp { border-top: 2px dashed var(--profit); }
 .plan-table table { font-size: 14px; }
 .plan-table td { padding: 4px 8px 4px 0; }
+
+/* live trade tracking */
+.live-trade + .live-trade { margin-top: 16px; }
+.live-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.live-pnl { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.live-pnl .small { display: block; font-size: 14px; font-weight: 600; }
+.track { position: relative; height: 10px; background: var(--line); border-radius: 5px; margin: 18px 0 6px; }
+.track-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; background: var(--accent-soft); border: 1px solid var(--accent); }
+.track-mark { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--ink-2); }
+.track-dot { position: absolute; top: 50%; width: 14px; height: 14px; margin-left: -7px; transform: translateY(-50%); border-radius: 50%; background: var(--accent); border: 2px solid var(--surface); }
+.track-labels { display: flex; justify-content: space-between; color: var(--muted); font-variant-numeric: tabular-nums; flex-wrap: wrap; gap: 4px 12px; }
+.live-tiles { margin: 14px 0 6px; }

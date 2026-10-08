@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Status · {{ brand }}{% endblock %}
 {% block content %}
-<meta http-equiv="refresh" content="60">
+<meta http-equiv="refresh" content="30">
 {% macro chip(kind, text) -%}
   <span class="chip {{ kind }}"><span aria-hidden="true">{{ {"good": "●", "bad": "✕", "warn": "▲", "idle": "○"}[kind] }}</span> {{ text }}</span>
 {%- endmacro %}
@@ -100,8 +100,36 @@
 <p class="muted">The engine hasn't saved a status yet. It does this after every 15-minute check.</p>
 {% endif %}
 
-<h2>Open trades</h2>
-{% if open_rows %}
+<h2 id="live">Open trades{% if live %} <span class="small muted" style="font-weight:400">live price {{ "%.2f"|format(live.price) }} at {{ live.time|dt }}</span>{% endif %}</h2>
+{% for t in live_trades %}{% set s = t.row %}
+<div class="card live-trade">
+  <div class="live-head">
+    <div>
+      <strong>#{{ s.id }} {{ s.direction }}</strong> <span class="muted small">· {{ t.setup }} · sent {{ s.created_at|dt }}</span>
+      <div class="small muted">{{ "TP1 hit, half closed, stop moved to entry" if s.status == "tp1" else "Waiting for TP1 or stop loss" }}</div>
+    </div>
+    <div class="live-pnl {{ 'pos' if t.pnl_pips > 0 else ('neg' if t.pnl_pips < 0 else '') }}">
+      {{ "%+d"|format(t.pnl_pips) }} pips
+      <span class="small">({{ "%+.2f"|format(t.pnl_r) }}R{% if t.pnl_usd is not none %} · {{ "%+d"|format(t.pnl_usd) }}$ at {{ lot_size }} lot{% endif %})</span>
+    </div>
+  </div>
+  <div class="track" role="img" aria-label="Price position between stop loss and TP2">
+    <span class="track-fill" style="width: {{ (t.position * 100)|round(1) }}%"></span>
+    <span class="track-mark" style="left: {{ (t.entry_pos * 100)|round(1) }}%" title="Entry"></span>
+    <span class="track-mark" style="left: {{ (t.tp1_pos * 100)|round(1) }}%" title="TP1"></span>
+    <span class="track-dot" style="left: {{ (t.position * 100)|round(1) }}%"></span>
+  </div>
+  <div class="track-labels small"><span>SL {{ "%.2f"|format(s.sl) }}</span><span>Entry {{ "%.2f"|format(s.entry) }}</span><span>TP1 {{ "%.2f"|format(s.tp1) }}</span><span>TP2 {{ "%.2f"|format(s.tp2) }}</span></div>
+  <div class="tiles live-tiles">
+    <div class="tile"><div class="label">Price now{{ " (ask)" if s.direction == "SELL" }}</div><div class="value-sm"><strong>{{ "%.2f"|format(t.price) }}</strong></div></div>
+    <div class="tile"><div class="label">To stop loss</div><div class="value-sm neg-ink"><strong>{{ t.to_sl }} pips</strong></div></div>
+    {% if s.status != "tp1" %}<div class="tile"><div class="label">To TP1</div><div class="value-sm pos-ink"><strong>{{ t.to_tp1 }} pips</strong></div></div>{% endif %}
+    <div class="tile"><div class="label">To TP2</div><div class="value-sm pos-ink"><strong>{{ t.to_tp2 }} pips</strong></div></div>
+  </div>
+  <p class="small"><a href="/chart?signal={{ s.id }}">See it on the chart ›</a></p>
+</div>
+{% endfor %}
+{% if open_rows and not live_trades %}
 <div class="table-wrap">
   <table>
     <thead><tr><th>#</th><th>Sent</th><th>Side</th><th class="num">Entry</th><th class="num">SL</th><th class="num">TP1</th><th class="num">TP2</th><th>State</th></tr></thead>
@@ -117,7 +145,7 @@
     </tbody>
   </table>
 </div>
-{% else %}
+{% elif not open_rows %}
 <p class="muted">No open trades.</p>
 {% endif %}
 

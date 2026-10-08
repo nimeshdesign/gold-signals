@@ -104,6 +104,13 @@ class Settings:
     # Pip and lot maths shown in signals (XAUUSD: 1 pip = $0.10, 1 standard lot = 100 oz).
     pip_size: float = field(default_factory=lambda: _float("PIP_SIZE", 0.10))
     contract_oz: float = field(default_factory=lambda: _float("CONTRACT_SIZE_OZ", 100))
+    # Live trade tracking: while a trade is open, check 1-minute prices this often (minutes); slow down to
+    # TRACK_SLOW_MINUTES once the day's Twelve Data requests pass TRACK_CREDIT_BUDGET (free plan: 800/day).
+    track_minutes: int = field(default_factory=lambda: _int("TRACK_MINUTES", 1))
+    track_slow_minutes: int = field(default_factory=lambda: _int("TRACK_SLOW_MINUTES", 5))
+    track_credit_budget: int = field(default_factory=lambda: _int("TRACK_CREDIT_BUDGET", 700))
+    # Broker spread used when checking live SL/TP: a SELL closes at the ask (chart price + spread).
+    live_spread: float = field(default_factory=lambda: _float("LIVE_SPREAD", 0.30))
     # Your usual lot size; signals show the $ risk and reward at this size (0 = don't show).
     lot_size: float = field(default_factory=lambda: _float("LOT_SIZE", 0))
     # Daily plan / day-end / weekly summary messages in the channel.

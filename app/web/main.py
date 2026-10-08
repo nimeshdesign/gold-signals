@@ -47,7 +47,8 @@ templates.env.globals.update(brand=settings.brand_name, symbol=settings.display_
                              payments_enabled=bool(settings.stripe_secret_key and settings.stripe_price_id),
                              sp={**DEFAULT_PARAMS.get(settings.strategy_name, {}), **settings.strategy_params},
                              params=settings.strategy, news_before=settings.news_block_before,
-                             news_after=settings.news_block_after, pip_size=settings.pip_size)
+                             news_after=settings.news_block_after, pip_size=settings.pip_size,
+                             lot_size=settings.lot_size)
 
 
 def _fmt_dt(value: str | None) -> str:
@@ -199,6 +200,7 @@ def status(request: Request):
         heartbeat = db.kv_get(conn, "engine_heartbeat")
         last_error = json.loads(db.kv_get(conn, "engine_last_error") or "null")
         open_rows = db.open_signals(conn)
+        live = json.loads(db.kv_get(conn, "live_price") or "null")
         recent = db.all_signals(conn)[:15]
         subs = conn.execute("SELECT status, COUNT(*) AS n FROM subscribers GROUP BY status").fetchall()
         stats = compute_stats(db.all_signals(conn))
@@ -212,6 +214,8 @@ def status(request: Request):
         "service": _service_state("gold-engine"),
         "last_error": last_error,
         "open_rows": open_rows,
+        "live": live,
+        "live_trades": [live_trade(r, live) for r in open_rows] if live else [],
         "recent": recent,
         "subs": {r["status"]: r["n"] for r in subs},
         "stats": stats,
@@ -219,6 +223,32 @@ def status(request: Request):
         "channel_set": bool(settings.telegram_channel_id),
         "now": now,
     })
+
+
+def live_trade(row, live: dict) -> dict:
+    """Where an open trade stands at the latest price: P/L and distance to each level, in pips and $."""
+    pip, oz = settings.pip_size, settings.lot_size * settings.contract_oz
+    d = 1 if row["direction"] == "BUY" else -1
+    # Closing a BUY sells at the bid (chart price); closing a SELL buys at the ask (chart price + spread).
+    exit_price = live["price"] + (settings.live_spread if d == -1 else 0.0)
+    pnl = d * (exit_price - row["entry"])
+    risk = abs(row["entry"] - row["sl"])
+    span = abs(row["tp2"] - row["sl"])
+    position = (d * (exit_price - row["sl"])) / span if span else 0  # 0 = at SL, 1 = at TP2
+
+    def away(level: float, toward_profit: bool) -> float:
+        gap = d * (level - exit_price)
+        return round((gap if toward_profit else -gap) / pip)
+
+    return {
+        "row": row, "price": round(exit_price, 2), "pnl_pips": round(pnl / pip),
+        "pnl_r": round(pnl / risk, 2) if risk else 0.0,
+        "pnl_usd": round(pnl * oz) if oz else None,
+        "to_sl": away(row["sl"], False), "to_tp1": away(row["tp1"], True), "to_tp2": away(row["tp2"], True),
+        "position": max(0.0, min(1.0, position)),
+        "entry_pos": (risk / span) if span else 0, "tp1_pos": (risk + abs(row["tp1"] - row["entry"])) / span if span else 0,
+        "setup": {"session_breakout": "Asian breakout", "orb": "NY open breakout"}.get(row["strategy"], row["strategy"]),
+    }
 
 
 def _service_state(name: str) -> str:
