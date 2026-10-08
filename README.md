@@ -47,6 +47,19 @@ Profit factor 1.47, max drawdown 11.3R, longest losing streak 6. Buys and sells 
 - The session breakout was the only type that held up across nearly all its settings: 86% of its 128 settings were profitable in training and 100% in 2026. It was chosen for that consistency, not for one lucky setting.
 - Because the 2026 data was used to choose it, no untouched test data is left. **Forward paper trading is the real test.** Run the engine with `DRY_RUN=false` into a private channel for 1–2 months before charging anyone, and expect live results to be worse than the backtest.
 
+### Walk-forward test (stricter)
+
+`python -m scripts.walkforward --csv data/xauusd_15min_2023-10-01_now.csv` picks the best setting on the previous 12 months, trades the next 3 months with it, rolls forward, and scores only those out-of-sample months (Oct 2024 – Oct 2026, $0.30 spread):
+
+| Setting pool | Trades | Win rate | Net R | Profit factor | t-stat | Profitable 3-month periods |
+|---|---|---|---|---|---|---|
+| Breakout, no add-ons | 297 | 48.5% | +39.9 | 1.26 | 1.82 | 7/9 |
+| + ADX trend strength | 274 | 46.4% | +44.3 | 1.30 | 1.99 | 7/9 (ADX chosen 1/9) |
+| + London–New York overlap only | 316 | 50.0% | +34.8 | 1.22 | 1.60 | 6/9 |
+| + previous-day high/low | 282 | 50.0% | +47.3 | 1.34 | 2.21 | 7/9 (filter chosen 5/9) |
+
+The edge survives out of sample but is about a third smaller than the single backtest suggested, and it falls just short of statistical significance (t ≈ 1.96). None of the add-ons is a clear improvement, so the live strategy is unchanged. They stay available as optional `STRATEGY_PARAMS` (`adx_min`, `window_start`, `pd_filter`: `"beyond"` or `"room"`).
+
 ## 1. Local setup
 
 ```bash

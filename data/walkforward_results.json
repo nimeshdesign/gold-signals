@@ -1,0 +1,338 @@
+{
+ "base": {
+  "metrics": {
+   "trades": 297,
+   "win_rate": 48.5,
+   "net_r": 39.9,
+   "avg_r": 0.134,
+   "pf": 1.26,
+   "max_dd": 10.9
+  },
+  "t_stat": 1.82,
+  "windows": 9,
+  "windows_profitable": 7,
+  "addon_chosen_in": 0,
+  "yearly": {
+   "2024": -3.7,
+   "2025": 9.5,
+   "2026": 34.1
+  },
+  "picks": [
+   {
+    "test": "2024-10..2024-12",
+    "train_r": 37.8,
+    "test_trades": 52,
+    "test_r": -3.7,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.0, 3.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-01..2025-03",
+    "train_r": 24.2,
+    "test_trades": 58,
+    "test_r": 1.7,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.0, 2.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-04..2025-06",
+    "train_r": 30.8,
+    "test_trades": 22,
+    "test_r": 4.4,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-07..2025-09",
+    "train_r": 39.4,
+    "test_trades": 37,
+    "test_r": 2.1,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-10..2025-12",
+    "train_r": 28.2,
+    "test_trades": 35,
+    "test_r": 1.4,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-01..2026-03",
+    "train_r": 32.2,
+    "test_trades": 32,
+    "test_r": 1.4,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-04..2026-06",
+    "train_r": 29.7,
+    "test_trades": 29,
+    "test_r": 18.8,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-07..2026-09",
+    "train_r": 40.6,
+    "test_trades": 31,
+    "test_r": 14.3,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-10..2026-10",
+    "train_r": 42.5,
+    "test_trades": 1,
+    "test_r": -0.4,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   }
+  ]
+ },
+ "adx": {
+  "metrics": {
+   "trades": 274,
+   "win_rate": 46.4,
+   "net_r": 44.3,
+   "avg_r": 0.162,
+   "pf": 1.3,
+   "max_dd": 10.9
+  },
+  "t_stat": 1.99,
+  "windows": 9,
+  "windows_profitable": 7,
+  "addon_chosen_in": 1,
+  "yearly": {
+   "2024": -3.7,
+   "2025": 13.9,
+   "2026": 34.1
+  },
+  "picks": [
+   {
+    "test": "2024-10..2024-12",
+    "train_r": 37.8,
+    "test_trades": 52,
+    "test_r": -3.7,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.0, 3.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-01..2025-03",
+    "train_r": 26.1,
+    "test_trades": 35,
+    "test_r": 6.0,
+    "setting": "{\"adx_min\": 20, \"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-04..2025-06",
+    "train_r": 30.8,
+    "test_trades": 22,
+    "test_r": 4.4,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-07..2025-09",
+    "train_r": 39.4,
+    "test_trades": 37,
+    "test_r": 2.1,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-10..2025-12",
+    "train_r": 28.2,
+    "test_trades": 35,
+    "test_r": 1.4,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-01..2026-03",
+    "train_r": 32.2,
+    "test_trades": 32,
+    "test_r": 1.4,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-04..2026-06",
+    "train_r": 29.7,
+    "test_trades": 29,
+    "test_r": 18.8,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-07..2026-09",
+    "train_r": 40.6,
+    "test_trades": 31,
+    "test_r": 14.3,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-10..2026-10",
+    "train_r": 42.5,
+    "test_trades": 1,
+    "test_r": -0.4,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   }
+  ]
+ },
+ "overlap": {
+  "metrics": {
+   "trades": 316,
+   "win_rate": 50.0,
+   "net_r": 34.8,
+   "avg_r": 0.11,
+   "pf": 1.22,
+   "max_dd": 11.8
+  },
+  "t_stat": 1.6,
+  "windows": 9,
+  "windows_profitable": 6,
+  "addon_chosen_in": 2,
+  "yearly": {
+   "2024": -3.7,
+   "2025": 4.4,
+   "2026": 34.1
+  },
+  "picks": [
+   {
+    "test": "2024-10..2024-12",
+    "train_r": 37.8,
+    "test_trades": 52,
+    "test_r": -3.7,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.0, 3.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-01..2025-03",
+    "train_r": 24.2,
+    "test_trades": 58,
+    "test_r": 1.7,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.0, 2.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-04..2025-06",
+    "train_r": 33.3,
+    "test_trades": 35,
+    "test_r": 2.5,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [0.8, 2.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16, \"window_start\": 12}"
+   },
+   {
+    "test": "2025-07..2025-09",
+    "train_r": 39.4,
+    "test_trades": 37,
+    "test_r": 2.1,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-10..2025-12",
+    "train_r": 43.6,
+    "test_trades": 41,
+    "test_r": -1.9,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16, \"window_start\": 12}"
+   },
+   {
+    "test": "2026-01..2026-03",
+    "train_r": 32.2,
+    "test_trades": 32,
+    "test_r": 1.4,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-04..2026-06",
+    "train_r": 29.7,
+    "test_trades": 29,
+    "test_r": 18.8,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-07..2026-09",
+    "train_r": 40.6,
+    "test_trades": 31,
+    "test_r": 14.3,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-10..2026-10",
+    "train_r": 42.5,
+    "test_trades": 1,
+    "test_r": -0.4,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   }
+  ]
+ },
+ "pdh_pdl": {
+  "metrics": {
+   "trades": 282,
+   "win_rate": 50.0,
+   "net_r": 47.3,
+   "avg_r": 0.168,
+   "pf": 1.34,
+   "max_dd": 10.2
+  },
+  "t_stat": 2.21,
+  "windows": 9,
+  "windows_profitable": 7,
+  "addon_chosen_in": 5,
+  "yearly": {
+   "2024": -3.7,
+   "2025": 15.6,
+   "2026": 35.4
+  },
+  "picks": [
+   {
+    "test": "2024-10..2024-12",
+    "train_r": 37.8,
+    "test_trades": 52,
+    "test_r": -3.7,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.0, 3.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-01..2025-03",
+    "train_r": 24.2,
+    "test_trades": 58,
+    "test_r": 1.7,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.0, 2.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-04..2025-06",
+    "train_r": 30.8,
+    "test_trades": 22,
+    "test_r": 4.4,
+    "setting": "{\"atr_cap\": 3, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-07..2025-09",
+    "train_r": 39.4,
+    "test_trades": 37,
+    "test_r": 2.1,
+    "setting": "{\"atr_cap\": 2, \"range_end\": 6, \"range_frac\": 1.0, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2025-10..2025-12",
+    "train_r": 28.9,
+    "test_trades": 34,
+    "test_r": 7.4,
+    "setting": "{\"atr_cap\": 3, \"pd_filter\": \"room\", \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-01..2026-03",
+    "train_r": 41.3,
+    "test_trades": 26,
+    "test_r": 1.2,
+    "setting": "{\"atr_cap\": 3, \"pd_filter\": \"beyond\", \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 0, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-04..2026-06",
+    "train_r": 39.5,
+    "test_trades": 26,
+    "test_r": 18.6,
+    "setting": "{\"atr_cap\": 3, \"pd_filter\": \"room\", \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-07..2026-09",
+    "train_r": 49.3,
+    "test_trades": 26,
+    "test_r": 16.0,
+    "setting": "{\"atr_cap\": 3, \"pd_filter\": \"room\", \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   },
+   {
+    "test": "2026-10..2026-10",
+    "train_r": 47.1,
+    "test_trades": 1,
+    "test_r": -0.4,
+    "setting": "{\"atr_cap\": 2, \"pd_filter\": \"room\", \"range_end\": 6, \"range_frac\": 0.5, \"range_start\": 0, \"tp\": [1.5, 3.0], \"trend_len\": 20, \"trend_tf\": \"1day\", \"window_end\": 16}"
+   }
+  ]
+ }
+}

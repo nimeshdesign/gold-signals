@@ -18,6 +18,21 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     return out.where(avg_loss != 0, 100.0).where(avg_gain.notna())
 
 
+def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Average Directional Index (Wilder): trend strength from 0 to 100, regardless of direction."""
+    up = df["high"].diff()
+    down = -df["low"].diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    smooth = lambda s: s.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()  # noqa: E731
+    tr = atr(df, 1)  # true range per bar
+    atr_s = smooth(tr)
+    plus_di = 100 * smooth(plus_dm) / atr_s
+    minus_di = 100 * smooth(minus_dm) / atr_s
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    return smooth(dx)
+
+
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     prev_close = df["close"].shift(1)
     tr = pd.concat(

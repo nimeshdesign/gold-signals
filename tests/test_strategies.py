@@ -49,6 +49,23 @@ def test_no_lookahead(name, m15):
         assert live["sl_dist"].iloc[-1] == pytest.approx(row["sl_dist"])
 
 
+@pytest.mark.parametrize("addon", [{"adx_min": 15}, {"window_start": 12}, {"pd_filter": "beyond"},
+                                   {"pd_filter": "room"}], ids=["adx", "overlap", "pd_beyond", "pd_room"])
+def test_session_breakout_addons_have_no_lookahead(addon, m15):
+    params = {**PARAMS["session_breakout"], **addon}
+    full = compute_signals("session_breakout", build_data(m15), params)
+    fired = full[full["signal"] != 0]
+    assert len(fired) >= 1, "add-on filtered out every signal on 60 days of random data"
+    base = compute_signals("session_breakout", build_data(m15), PARAMS["session_breakout"])
+    assert (full["signal"] != 0).sum() <= (base["signal"] != 0).sum()  # filters only remove signals
+    for bar_time, row in fired.iterrows():
+        past = m15[m15.index + pd.Timedelta(minutes=15) <= row["close_time"]]
+        live = compute_signals("session_breakout", build_data(past), params)
+        assert live.index[-1] == bar_time
+        assert live["signal"].iloc[-1] == row["signal"]
+        assert live["sl_dist"].iloc[-1] == pytest.approx(row["sl_dist"])
+
+
 def test_sell_spread_is_charged_on_exit():
     """A sell whose target is touched by less than the spread is not a win."""
     idx = pd.date_range("2025-01-06", periods=4, freq="15min", tz="UTC")

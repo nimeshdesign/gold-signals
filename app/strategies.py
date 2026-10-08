@@ -16,7 +16,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from .indicators import atr, ema, rsi
+from .indicators import adx, atr, ema, rsi
 from .strategy import interval_to_timedelta
 
 OHLC = {"open": "first", "high": "max", "low": "min", "close": "last"}
@@ -131,6 +131,12 @@ def session_breakout(data, p) -> pd.DataFrame:
 
     Range = high/low of 15-min candles from range_start to range_end (UTC hours).
     A 15-min close beyond the range inside the trade window triggers the entry in the trend direction.
+
+    Optional filters (off unless set):
+      window_start  only take breakouts from this UTC hour (e.g. 12 = London-New York overlap)
+      adx_min       1-hour ADX(14) must be at least this (trend strong enough)
+      pd_filter     "beyond": the close must also be beyond the previous day's high (buy) / low (sell)
+                    "room":   no previous-day high/low within 1R in the trade direction (room to run)
     """
     df = data["15min"]
     hour = df.index.hour
@@ -139,20 +145,39 @@ def session_breakout(data, p) -> pd.DataFrame:
     rng = df[in_range].groupby(day[in_range]).agg(hi=("high", "max"), lo=("low", "min"))
     hi = pd.Series(day, index=df.index).map(rng["hi"])
     lo = pd.Series(day, index=df.index).map(rng["lo"])
-    in_window = (hour >= p["range_end"]) & (hour < p["window_end"])
+    window_start = max(p.get("window_start") or p["range_end"], p["range_end"])
+    in_window = (hour >= window_start) & (hour < p["window_end"])
     c = df["close"]
     trend = _trend(data, "15min", p["trend_tf"], p["trend_len"]) if p.get("trend_len") else pd.Series(0, index=df.index)
-
-    up = in_window & (c > hi) & (c.shift(1) <= hi) & (trend >= 0)
-    down = in_window & (c < lo) & (c.shift(1) >= lo) & (trend <= 0)
-    raw = up.astype(int) - down.astype(int)
-    # First breakout of the day only.
-    first = raw.ne(0) & ~raw.ne(0).groupby(day).cumsum().gt(1)
-    signal = raw.where(first, 0)
 
     width = hi - lo
     atr_h = htf_series(df, "15min", data["1h"], "1h", atr(data["1h"], 14))
     sl = (width * p["range_frac"]).clip(lower=atr_h * 0.5, upper=atr_h * p["atr_cap"])
+
+    up = in_window & (c > hi) & (c.shift(1) <= hi) & (trend >= 0)
+    down = in_window & (c < lo) & (c.shift(1) >= lo) & (trend <= 0)
+
+    if p.get("adx_min"):
+        strong = htf_series(df, "15min", data["1h"], "1h", adx(data["1h"], 14)) >= p["adx_min"]
+        up &= strong
+        down &= strong
+    if p.get("pd_filter"):
+        daily = data["1day"]
+        prev_hi = pd.Series(day, index=df.index).map(daily["high"].shift(1))
+        prev_lo = pd.Series(day, index=df.index).map(daily["low"].shift(1))
+        if p["pd_filter"] == "beyond":
+            up &= c > prev_hi
+            down &= c < prev_lo
+        elif p["pd_filter"] == "room":
+            up &= (prev_hi <= c) | (prev_hi - c >= sl)
+            down &= (prev_lo >= c) | (c - prev_lo >= sl)
+        else:
+            raise ValueError(f"unknown pd_filter {p['pd_filter']!r}")
+
+    raw = up.astype(int) - down.astype(int)
+    # First breakout of the day only.
+    first = raw.ne(0) & ~raw.ne(0).groupby(day).cumsum().gt(1)
+    signal = raw.where(first, 0)
     return _output(df, "15min", signal, sl)
 
 
