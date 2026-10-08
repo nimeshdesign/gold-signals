@@ -78,7 +78,7 @@ def _p(x: float) -> str:
 
 
 def format_signal(symbol: str, direction: str, entry: float, sl: float, tp1: float, tp2: float,
-                  tp1_r: float, tp2_r: float) -> str:
+                  tp1_r: float, tp2_r: float, setup: str | None = None) -> str:
     from .config import settings
 
     icon = "🟢" if direction == "BUY" else "🔴"
@@ -88,7 +88,7 @@ def format_signal(symbol: str, direction: str, entry: float, sl: float, tp1: flo
         return f"{abs(a - b) / settings.pip_size:,.0f} pips"
 
     lines = [
-        f"{icon} <b>{html.escape(symbol)} {direction}</b>",
+        f"{icon} <b>{html.escape(symbol)} {direction}</b>" + (f" · {html.escape(setup)}" if setup else ""),
         "",
         f"Entry: <code>{_p(entry)}</code>",
         f"SL: <code>{_p(sl)}</code> ({pips(entry, sl)})",
@@ -152,8 +152,12 @@ def format_daily_plan(symbol: str, snap: dict, now, events) -> str:
         "",
         f"👀 Watching for a <b>{'BUY' if up else 'SELL'}</b> if a 15-min candle closes "
         f"{'above' if up else 'below'} <code>{_p(level)}</code>",
-        f"⏰ Until {_hour_local(rng['window_end'])}. At most one signal today.",
+        f"⏰ Until {_hour_local(rng['window_end'])}. One Asian-breakout signal at most.",
     ]
+    ny = snap.get("ny_setup")
+    if ny:
+        lines += ["", f"🗽 Second setup: <b>NY open breakout</b>. Range {_local(ny['range_start'])}–"
+                      f"{_local(ny['range_end'])}, trades until {_local(ny['window_end'])}. Same 100-pip SL plan."]
     plan = snap.get("planned")
     if plan:
         lines += [
@@ -173,7 +177,8 @@ def format_day_end(symbol: str, snap: dict, today_rows) -> str:
     head = f"🌙 <b>{html.escape(symbol)} day end</b>"
     if not today_rows:
         moves = snap.get("window_moves") or {}
-        text = [head, "", "No signal today: gold did not close outside the Asian range in the trend direction."]
+        text = [head, "", "No signal today: gold did not break out in the trend direction"
+                          + (" in either session." if snap.get("ny_setup") else " of the Asian range.")]
         if moves:
             text.append(f"Range {_p(rng['low'])} – {_p(rng['high'])}; during the trading window gold moved "
                         f"between {_p(moves['low'])} and {_p(moves['high'])}.")
@@ -184,10 +189,12 @@ def format_day_end(symbol: str, snap: dict, today_rows) -> str:
     states = {"open": "open, waiting for TP1 or SL", "tp1": "TP1 hit, stop moved to entry, still running",
               "sl": "stop loss hit", "be": "TP1 hit, then closed at entry", "tp2": "TP1 and TP2 hit",
               "expired": "closed at the time limit"}
-    text = [head, ""]
+    labels = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
+    text = [head, "", f"Today's signals ({len(today_rows)}):"]
     for r in today_rows:
         res = f" ({r['result_r']:+.2f}R)" if r["result_r"] is not None else ""
-        text.append(f"Today's signal: <b>{r['direction']}</b> at <code>{_p(r['entry'])}</code>: "
+        strategy = r["strategy"] if "strategy" in r.keys() else "session_breakout"
+        text.append(f"• {labels.get(strategy, strategy)} <b>{r['direction']}</b> at <code>{_p(r['entry'])}</code>: "
                     f"{states.get(r['status'], r['status'])}{res}")
     text += ["", "Open trades keep being tracked overnight; updates arrive as replies to the signal."]
     return "\n".join(text)

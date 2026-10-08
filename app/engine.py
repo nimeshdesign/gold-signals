@@ -35,6 +35,7 @@ log = logging.getLogger("engine")
 # 15-min candles for trade tracking and intraday rules; 1h candles (~10 months) for 4h/daily trends.
 M15_BARS = 1000
 M15_BACKFILL = 5000  # Twelve Data maximum per request (~7 weeks of 15-min candles)
+SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
 H1_BARS = 5000
 M15 = pd.Timedelta(minutes=15)
 
@@ -53,6 +54,30 @@ class Engine:
         self.tp1_r = settings.strategy.tp1_r
         self.tp2_r = settings.strategy.tp2_r
         self.skip_note: str | None = None
+        # Extra setups (e.g. the New York open breakout) run alongside the main strategy.
+        self.extra_setups = [
+            {"name": e["name"], "params": {**DEFAULT_PARAMS[e["name"]], **e.get("params", {})},
+             "label": e.get("label") or SETUP_LABELS.get(e["name"], e["name"]), "main": False}
+            for e in settings.extra_strategies
+        ]
+
+    def ny_session(self, now: pd.Timestamp) -> dict | None:
+        """Today's New York open-breakout times in UTC (they move with US daylight saving)."""
+        orb_setup = next((s for s in self.extra_setups if s["name"] == "orb"), None)
+        if orb_setup is None:
+            return None
+        p = orb_setup["params"]
+        day = now.tz_convert("America/New_York").strftime("%Y-%m-%d")
+        start = pd.Timestamp(f"{day} {p['open_hm']}", tz="America/New_York").tz_convert("UTC")
+        return {"range_start": _iso(start), "range_end": _iso(start + pd.Timedelta(minutes=p["range_min"])),
+                "window_end": _iso(pd.Timestamp(f"{day} {p['window_end']:02d}:00",
+                                                tz="America/New_York").tz_convert("UTC"))}
+
+    @property
+    def setups(self) -> list[dict]:
+        main = {"name": self.strategy_name, "params": self.strategy_params,
+                "label": SETUP_LABELS.get(self.strategy_name, self.strategy_name), "main": True}
+        return [main, *self.extra_setups]
 
     # ----- one cycle -----
 
@@ -67,6 +92,12 @@ class Engine:
             self.save_candles(conn, m15)
             self.track_open_signals(conn, m15)
             signals = self.check_for_signal(conn, data)
+            for setup in self.setups[1:]:
+                try:
+                    self.check_for_signal(conn, data, setup)
+                except Exception as exc:
+                    log.exception("Setup %s failed", setup["label"])
+                    _record_error(f"{setup['label']} check failed: {exc!r}")
             snap = None
             try:
                 snap = self.status_snapshot(data, signals)
@@ -98,7 +129,11 @@ class Engine:
             db.kv_set(conn, "plan_sent", day)
             log.info("Sent daily plan")
 
-        if now.hour >= rng["window_end"] and db.kv_get(conn, "plan_sent") == day and db.kv_get(conn, "dayend_sent") != day:
+        # Day end waits until every setup's trading window has closed.
+        day_over = now.normalize() + pd.Timedelta(hours=rng["window_end"])
+        if snap.get("ny_setup"):
+            day_over = max(day_over, pd.Timestamp(snap["ny_setup"]["window_end"]))
+        if now >= day_over and db.kv_get(conn, "plan_sent") == day and db.kv_get(conn, "dayend_sent") != day:
             today_rows = conn.execute("SELECT * FROM signals WHERE created_at >= ? ORDER BY id",
                                       (_iso(now.normalize()),)).fetchall()
             self.tg.send_message(chat, format_day_end(settings.display_symbol, snap, today_rows))
@@ -175,13 +210,18 @@ class Engine:
             "price": round(float(fired["close"].iloc[0]), 2),
         }
         snap["skip_note"] = self.skip_note
+        snap["ny_setup"] = self.ny_session(now)
+        snap["setups"] = [s["label"] for s in self.setups]
         if settings.news_filter_enabled:
             event = self.news.blocking_event()
             snap["news_block"] = f"{event.title} at {event.time:%H:%M} UTC" if event else None
         return snap
 
-    def check_for_signal(self, conn, data: dict[str, pd.DataFrame]) -> pd.DataFrame:
-        signals = compute_signals(self.strategy_name, data, self.strategy_params)
+    def check_for_signal(self, conn, data: dict[str, pd.DataFrame], setup: dict | None = None) -> pd.DataFrame:
+        """Publish a new signal for one setup (the main strategy unless `setup` is given)."""
+        setup = setup or self.setups[0]
+        signals = compute_signals(setup["name"], data, setup["params"])
+        label = setup["label"]
         if signals.empty:
             return signals
         last = signals.iloc[-1]
@@ -203,14 +243,16 @@ class Engine:
         tp2 = round(entry + d * risk * self.tp2_r, 2)
 
         if len(db.open_signals(conn)) >= settings.max_open_signals:
-            self.skip_note = f"{entry_time:%Y-%m-%d %H:%M} UTC: {direction} at {entry} skipped, a signal is already open"
-            log.info("Skipping %s signal: %d signal(s) already open", direction, settings.max_open_signals)
+            self.skip_note = (f"{entry_time:%Y-%m-%d %H:%M} UTC: {label} {direction} at {entry} skipped, "
+                              f"{settings.max_open_signals} signal(s) already open")
+            log.info("Skipping %s %s signal: %d signal(s) already open", label, direction, settings.max_open_signals)
             return signals
         if settings.news_filter_enabled:
             event = self.news.blocking_event()
             if event:
-                self.skip_note = f"{entry_time:%Y-%m-%d %H:%M} UTC: {direction} at {entry} skipped, news blackout ({event.title})"
-                log.info("Skipping %s signal: news blackout for %s at %s", direction, event.title, event.time)
+                self.skip_note = (f"{entry_time:%Y-%m-%d %H:%M} UTC: {label} {direction} at {entry} skipped, "
+                                  f"news blackout ({event.title})")
+                log.info("Skipping %s %s signal: news blackout for %s at %s", label, direction, event.title, event.time)
                 return signals
 
         signal_id = db.insert_signal(
@@ -220,12 +262,15 @@ class Engine:
             bar_time=_iso(bar_time),
             created_at=_iso(entry_time),
             last_checked=_iso(entry_time - M15),
+            strategy=setup["name"], main=setup["main"],
         )
         if signal_id is None:
             return signals  # already published for this candle
         conn.commit()  # persist before sending so a crash can't double-send
-        log.info("NEW SIGNAL #%d %s @ %.2f SL %.2f TP1 %.2f TP2 %.2f", signal_id, direction, entry, sl, tp1, tp2)
-        text = format_signal(settings.display_symbol, direction, entry, sl, tp1, tp2, self.tp1_r, self.tp2_r)
+        log.info("NEW SIGNAL #%d %s %s @ %.2f SL %.2f TP1 %.2f TP2 %.2f", signal_id, label, direction,
+                 entry, sl, tp1, tp2)
+        text = format_signal(settings.display_symbol, direction, entry, sl, tp1, tp2, self.tp1_r, self.tp2_r,
+                             setup=label)
         try:
             msg_id = self.tg.send_message(settings.telegram_channel_id, text)
             db.set_signal_message(conn, signal_id, msg_id)

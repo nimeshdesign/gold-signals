@@ -116,6 +116,9 @@ class Settings:
     # Which rules the engine runs (see app/strategies.py) and their settings as JSON.
     strategy_name: str = field(default_factory=lambda: _str("STRATEGY", "ema_cross"))
     strategy_params: dict = field(default_factory=lambda: json.loads(_str("STRATEGY_PARAMS") or "{}"))
+    # Extra setups that run alongside the main one, as a JSON list:
+    # [{"name": "orb", "label": "NY open breakout", "params": {...}}]
+    extra_strategies: list = field(default_factory=lambda: json.loads(_str("EXTRA_STRATEGIES") or "[]"))
 
 
 settings = Settings()

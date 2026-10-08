@@ -72,7 +72,7 @@ def _record(row, st: TradeState, closed_at, cfg: SimConfig) -> dict:
     return {
         "entry_time": row.close_time, "closed_at": closed_at, "direction": st.direction,
         "entry": st.entry, "sl": round(st.sl, 2), "tp1": round(st.tp1, 2), "tp2": round(st.tp2, 2),
-        "risk": round(st.risk, 2), "outcome": st.status,
+        "risk": round(st.risk, 2), "outcome": st.status, "strategy": getattr(row, "strategy", None),
         "result_r_gross": st.result_r,
         "result_r": round(st.result_r - cost, 3),
     }

@@ -99,7 +99,7 @@
 
   {% for t in view.trades %}{% set r = t.row %}
   <div class="card">
-    <h3>Signal #{{ r.id }}: {{ r.direction }}</h3>
+    <h3>Signal #{{ r.id }}: {{ r.direction }} <span class="muted small">· {{ {"session_breakout": "Asian breakout", "orb": "NY open breakout"}.get(r.strategy, r.strategy) }}</span></h3>
     <div class="table-wrap flat">
       <table>
         <thead><tr><th>Level</th><th class="num">Price</th><th class="num">From entry</th><th class="num">R</th></tr></thead>

@@ -9,6 +9,7 @@ from datetime import timedelta
 import pandas as pd
 
 CLOSED = {"sl", "be", "tp2", "expired"}
+SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
 IST = timedelta(hours=5, minutes=30)
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 OUTCOME_LABELS = {
@@ -59,6 +60,7 @@ class Analytics:
     outcomes: list[dict] = field(default_factory=list)
     monthly: list[dict] = field(default_factory=list)
     by_side: list[Group] = field(default_factory=list)
+    by_setup: list[Group] = field(default_factory=list)
     by_weekday: list[Group] = field(default_factory=list)
     by_hour: list[Group] = field(default_factory=list)
     equity: list[tuple[str, float]] = field(default_factory=list)
@@ -161,6 +163,8 @@ def compute(df: pd.DataFrame) -> Analytics:
     a.months_profitable = sum(1 for m in a.monthly if m["net_r"] > 0)
 
     a.by_side = [_group(s, g) for s, g in c.groupby("direction")]
+    if "strategy" in c and c["strategy"].nunique() > 1:
+        a.by_setup = [_group(SETUP_LABELS.get(s, s), g) for s, g in c.groupby("strategy")]
     wd = c["created_at"].dt.weekday
     a.by_weekday = [_group(WEEKDAYS[d], c[wd == d]) for d in sorted(wd.unique())]
     hour = c["created_at"].dt.hour
@@ -171,7 +175,8 @@ def compute(df: pd.DataFrame) -> Analytics:
     for _, row in c.sort_values("created_at", ascending=False).iterrows():
         a.rows.append({
             "id": row["id"], "sent": row["created_at"], "sent_ist": row["created_at"] + IST,
-            "direction": row["direction"], "entry": row["entry"], "sl": row["sl"], "tp1": row["tp1"], "tp2": row["tp2"],
+            "direction": row["direction"], "entry": row["entry"],
+            "setup": SETUP_LABELS.get(row.get("strategy"), row.get("strategy") or ""), "sl": row["sl"], "tp1": row["tp1"], "tp2": row["tp2"],
             "outcome": OUTCOME_LABELS[_outcome_key(row)], "kind": OUTCOME_KIND[_outcome_key(row)],
             "result_r": row["result_r"], "hours": round((row["closed_at"] - row["created_at"]).total_seconds() / 3600, 1),
             "is_sl": row["status"] == "sl",

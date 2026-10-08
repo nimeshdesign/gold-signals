@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS signals (
     last_checked    TEXT,                   -- open time of the last candle applied by the tracker
     telegram_msg_id INTEGER,
     atr             REAL,
-    rsi             REAL
+    rsi             REAL,
+    strategy        TEXT NOT NULL DEFAULT 'session_breakout'
 );
 CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 
@@ -75,6 +76,10 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 def init_db(path: Path | None = None) -> None:
     with connect(path) as conn:
         conn.executescript(SCHEMA)
+        # Upgrade older databases in place.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(signals)")}
+        if "strategy" not in cols:
+            conn.execute("ALTER TABLE signals ADD COLUMN strategy TEXT NOT NULL DEFAULT 'session_breakout'")
 
 
 @contextmanager
@@ -93,17 +98,19 @@ def session(path: Path | None = None) -> Iterator[sqlite3.Connection]:
 # ---------- signals ----------
 
 def insert_signal(conn, *, symbol, direction, entry, sl, tp1, tp2, bar_time, created_at, atr=None, rsi=None,
-                  last_checked=None) -> int | None:
-    """Insert a signal. Returns the new id, or None if a signal for this candle already exists.
+                  last_checked=None, strategy: str = "session_breakout", main: bool = True) -> int | None:
+    """Insert a signal. Returns the new id, or None if this setup already signalled on this candle.
 
     `last_checked` is the open time of the last 15-min candle that is already in the past at entry;
     the tracker starts with the candle after it. Defaults to `bar_time` (15-min signals).
+    Extra setups get "#<strategy>" appended to the idempotency key so two setups can fire on one candle.
     """
+    key = bar_time if main else f"{bar_time}#{strategy}"
     cur = conn.execute(
         """INSERT OR IGNORE INTO signals
-           (symbol, direction, entry, sl, tp1, tp2, bar_time, created_at, last_checked, atr, rsi)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (symbol, direction, entry, sl, tp1, tp2, bar_time, created_at, last_checked or bar_time, atr, rsi),
+           (symbol, direction, entry, sl, tp1, tp2, bar_time, created_at, last_checked, atr, rsi, strategy)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (symbol, direction, entry, sl, tp1, tp2, key, created_at, last_checked or bar_time, atr, rsi, strategy),
     )
     return cur.lastrowid if cur.rowcount else None
 

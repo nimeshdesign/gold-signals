@@ -115,6 +115,7 @@
   </div>
 </div>
 {%- endmacro %}
+{% if a.by_setup %}<div style="margin-bottom:16px">{{ group_table("By setup", a.by_setup) }}</div>{% endif %}
 <div class="grid">
   {{ group_table("Buy vs sell", a.by_side) }}
   {{ group_table("Day of the week (signal sent)", a.by_weekday) }}
@@ -126,10 +127,10 @@
 <p class="small muted">{{ table_total }} signals{% if table_total > table|length %}, newest {{ table|length }} shown{% endif %}.</p>
 <div class="table-wrap">
   <table>
-    <thead><tr><th>Sent (India time)</th><th>Side</th><th class="num">Entry</th><th class="num">Stop loss</th><th class="num">TP1</th><th class="num">TP2</th><th>Outcome</th><th class="num">Result</th><th class="num">Hours</th><th></th></tr></thead>
+    <thead><tr><th>Sent (India time)</th><th>Setup</th><th>Side</th><th class="num">Entry</th><th class="num">Stop loss</th><th class="num">TP1</th><th class="num">TP2</th><th>Outcome</th><th class="num">Result</th><th class="num">Hours</th><th></th></tr></thead>
     <tbody>{% for t in table %}
       <tr>
-        <td>{{ t.sent_ist.strftime("%d %b %Y %I:%M %p") }}</td><td>{{ t.direction }}</td>
+        <td>{{ t.sent_ist.strftime("%d %b %Y %I:%M %p") }}</td><td>{{ t.setup }}</td><td>{{ t.direction }}</td>
         <td class="num">{{ "%.2f"|format(t.entry) }}</td><td class="num">{{ "%.2f"|format(t.sl) }}</td>
         <td class="num">{{ "%.2f"|format(t.tp1) }}</td><td class="num">{{ "%.2f"|format(t.tp2) }}</td>
         <td><span class="chip {{ t.kind }} small-chip"><span aria-hidden="true">{{ "●" if t.kind == "good" else "✕" }}</span> {{ t.outcome }}</span></td>

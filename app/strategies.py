@@ -178,8 +178,9 @@ def session_breakout(data, p) -> pd.DataFrame:
             raise ValueError(f"unknown pd_filter {p['pd_filter']!r}")
 
     raw = up.astype(int) - down.astype(int)
-    # First breakout of the day only.
-    first = raw.ne(0) & ~raw.ne(0).groupby(day).cumsum().gt(1)
+    # First breakout(s) of the day only: max_per_day (default 1). A later one needs price to come back
+    # inside the range and break out again.
+    first = raw.ne(0) & ~raw.ne(0).groupby(day).cumsum().gt(p.get("max_per_day", 1))
     signal = raw.where(first, 0)
     return _output(df, "15min", signal, sl)
 
@@ -214,6 +215,8 @@ def orb(data, p) -> pd.DataFrame:
 
     atr_h = htf_series(df, "15min", data["1h"], "1h", atr(data["1h"], 14))
     sl = ((hi - lo) * p["range_frac"]).clip(lower=atr_h * 0.5, upper=atr_h * p["atr_cap"])
+    if p.get("sl_fixed"):
+        sl = pd.Series(float(p["sl_fixed"]), index=df.index)
     return _output(df, "15min", signal, sl)
 
 

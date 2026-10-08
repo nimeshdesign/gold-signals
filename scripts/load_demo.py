@@ -39,6 +39,8 @@ def main() -> None:
                 conn, symbol="XAUUSD", direction=t.direction, entry=t.entry, sl=t.sl, tp1=t.tp1, tp2=t.tp2,
                 bar_time=(t.entry_time - pd.Timedelta(minutes=15)).isoformat(),
                 created_at=t.entry_time.isoformat(),
+                strategy=getattr(t, "strategy", None) or "session_breakout",
+                main=(getattr(t, "strategy", None) or "session_breakout") == "session_breakout",
             )
             # Gross R, matching how the live tracker scores signals (costs excluded, as the site states).
             db.update_signal(conn, sid, status=t.outcome, result_r=t.result_r_gross, closed_at=t.closed_at.isoformat())

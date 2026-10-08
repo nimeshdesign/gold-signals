@@ -31,8 +31,15 @@ from app.simulator import SimConfig, metrics, simulate  # noqa: E402
 from app.strategies import DEFAULT_PARAMS, build_data, compute_signals  # noqa: E402
 
 
-def run(m15: pd.DataFrame, strategy: str, params: dict, tp1_r: float, tp2_r: float, spread: float) -> pd.DataFrame:
-    signals = compute_signals(strategy, build_data(m15), params)
+def run(m15: pd.DataFrame, strategy: str, params: dict, tp1_r: float, tp2_r: float, spread: float,
+        extras: list[dict] | None = None) -> pd.DataFrame:
+    """Simulate the main strategy plus any extra setups together, sharing the max-open-trades limit."""
+    data = build_data(m15)
+    signals = compute_signals(strategy, data, params).assign(strategy=strategy)
+    for extra in extras or []:
+        extra_params = {**DEFAULT_PARAMS[extra["name"]], **extra.get("params", {})}
+        signals = pd.concat([signals, compute_signals(extra["name"], data, extra_params).assign(strategy=extra["name"])])
+    signals = signals[signals["signal"] != 0].sort_index()
     cfg = SimConfig(tp1_r=tp1_r, tp2_r=tp2_r, spread=spread, max_open=settings.max_open_signals,
                     expiry_hours=settings.signal_expiry_hours)
     return simulate(signals, m15, cfg)
@@ -60,6 +67,9 @@ def summarize(trades: pd.DataFrame) -> str:
         "", "Outcomes:", trades["outcome"].value_counts().to_string(),
         "", "By year:", by_year.to_string(),
         "", "By side:", by_side.to_string(),
+        *(["", "By setup:", trades.groupby("strategy")["result_r"].agg(
+            trades="count", win_rate=lambda s: round((s > 0).mean() * 100, 1), net_r="sum").round(2).to_string()]
+          if trades["strategy"].nunique() > 1 else []),
     ])
 
 
@@ -84,6 +94,7 @@ def main() -> None:
     ap.add_argument("--tp2", type=float, default=settings.strategy.tp2_r)
     ap.add_argument("--spread", type=float, default=0.30, help="spread in $ per ounce (default 0.30)")
     ap.add_argument("--out", default="backtest_trades.csv")
+    ap.add_argument("--no-extras", action="store_true", help="test only the main strategy")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -106,7 +117,10 @@ def main() -> None:
         params.update(json.loads(args.params))
     print(f"Strategy: {args.strategy} {params}  TP1={args.tp1}R TP2={args.tp2}R  spread=${args.spread}\n")
 
-    trades = run(m15, args.strategy, params, args.tp1, args.tp2, args.spread)
+    extras = settings.extra_strategies if args.strategy == settings.strategy_name and not args.no_extras else []
+    if extras:
+        print("Extra setups: " + ", ".join(e["name"] for e in extras) + f" (max {settings.max_open_signals} open)\n")
+    trades = run(m15, args.strategy, params, args.tp1, args.tp2, args.spread, extras)
     print(summarize(trades))
     if not trades.empty:
         trades.to_csv(args.out, index=False)
