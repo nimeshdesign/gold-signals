@@ -54,7 +54,9 @@
       <li><span class="key key-entry"></span>Entry</li>
       <li><span class="key key-sl"></span>Stop loss</li>
       <li><span class="key key-tp"></span>TP1 / TP2</li>
-    {% elif view.trigger %}<li><span class="key key-trigger"></span>{{ view.trigger.side|title }} trigger</li>{% endif %}
+    {% elif view.trigger %}<li><span class="key key-trigger"></span>{{ view.trigger.side|title }} trigger</li>
+      {% if view.planned %}<li><span class="key key-plan-sl"></span>Planned SL</li><li><span class="key key-plan-tp"></span>Planned TP1 / TP2</li>{% endif %}
+    {% endif %}
   </ul>
   <p class="small muted">Asian range forms {{ hour(range_start) }}–{{ hour(range_end) }}; signals can fire {{ hour(range_end) }}–{{ hour(window_end) }} {{ tz_name }}. Hover the chart for prices. Scroll or pinch to zoom.</p>
 </div>
@@ -70,6 +72,22 @@
       <dt>Asian range</dt>
       <dd>{% if view.range.high is not none %}{{ "%.2f"|format(view.range.low) }} – {{ "%.2f"|format(view.range.high) }} <span class="muted small">({{ "%.2f"|format(view.range.width) }} wide)</span>{% else %}<span class="muted">not formed</span>{% endif %}</dd>
       {% if view.trigger %}<dt>Trigger</dt><dd>{{ view.trigger.side }} on a 15-min close {{ "above" if view.trigger.side == "BUY" else "below" }} {{ "%.2f"|format(view.trigger.price) }}</dd>{% endif %}
+      {% if view.planned and not view.trades %}
+      <dt>If it triggers (approx.)</dt>
+      <dd>
+        <div class="table-wrap flat plan-table">
+          <table>
+            <tbody>
+              <tr><td>TP2</td><td class="num">{{ "%.2f"|format(view.planned.tp2) }}</td><td class="num pos">{{ "%+.1fR"|format(view.tp2_r) }}</td></tr>
+              <tr><td>TP1</td><td class="num">{{ "%.2f"|format(view.planned.tp1) }}</td><td class="num pos">{{ "%+.1fR"|format(view.tp1_r) }}</td></tr>
+              <tr><td>Entry ≈ trigger</td><td class="num">{{ "%.2f"|format(view.planned.entry) }}</td><td class="num">–</td></tr>
+              <tr><td>Stop loss</td><td class="num">{{ "%.2f"|format(view.planned.sl) }}</td><td class="num neg">−1.0R</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="small muted">Risk about {{ "%.2f"|format(view.planned.risk) }} per ounce. Exact levels come with the signal, from the breakout candle's close.</div>
+      </dd>
+      {% endif %}
       <dt>Day high / low</dt><dd>{{ "%.2f"|format(view.day_high) }} / {{ "%.2f"|format(view.day_low) }}</dd>
       <dt>Strategy</dt>
       <dd>{% if view.strategy_signal %}{{ view.strategy_signal.side }} at {{ "%.2f"|format(view.strategy_signal.price) }}
@@ -127,6 +145,15 @@
     upColor: "rgba(0,0,0,0)", borderUpColor: col.up, wickUpColor: col.up,
     downColor: col.down, borderDownColor: col.down, wickDownColor: col.down,
     priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+    // Fit the price scale to the candles AND every level line, so SL/TP far from price stay visible.
+    autoscaleInfoProvider: original => {
+      const res = original();
+      if (!res || !data.levels.length) return res;
+      const prices = data.levels.map(l => l.price);
+      res.priceRange.minValue = Math.min(res.priceRange.minValue, ...prices);
+      res.priceRange.maxValue = Math.max(res.priceRange.maxValue, ...prices);
+      return res;
+    },
   });
   series.setData(data.candles.map(c => ({ time: c[0], open: c[1], high: c[2], low: c[3], close: c[4] })));
   const S = LightweightCharts.LineStyle;
@@ -136,6 +163,8 @@
     entry: { color: col.ink, lineStyle: S.Solid, lineWidth: 2 },
     sl: { color: col.loss, lineStyle: S.Solid, lineWidth: 2 },
     tp: { color: col.profit, lineStyle: S.Solid, lineWidth: 2 },
+    plan_sl: { color: col.loss, lineStyle: S.Dashed, lineWidth: 1 },
+    plan_tp: { color: col.profit, lineStyle: S.Dashed, lineWidth: 1 },
   };
   data.levels.forEach(l => series.createPriceLine({ price: l.price, title: l.title, axisLabelVisible: true, ...style[l.kind] }));
   const mcol = { entry: col.accent, tp: col.profit, sl: col.loss, strategy: col.muted };

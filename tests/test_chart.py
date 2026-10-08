@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import db
+from app.strategies import plan_levels
 from app.web import auth, chart
 
 PARAMS = {"range_start": 0, "range_end": 6, "window_end": 16, "trend_tf": "1day", "trend_len": 20,
@@ -80,6 +81,40 @@ def test_day_without_signal_shows_trigger(conn_with_data):
         v = chart.day_view(conn, date(2026, 3, 3), PARAMS, 1.0, 3.0, 5.5)
     assert not v["trades"]
     assert any(lvl["kind"] == "trigger" for lvl in v["levels"]) == (v["trigger"] is not None)
+
+
+def test_planned_levels_match_strategy_stop():
+    idx = pd.date_range("2026-03-04", periods=96, freq="15min", tz="UTC")
+    signals = pd.DataFrame({"signal": 0, "sl_dist": 10.0}, index=idx)
+    signals.loc[idx[-1], "sl_dist"] = 12.0  # latest candle in the window decides (16:00 is outside -> 15:45)
+    start = pd.Timestamp("2026-03-04", tz="UTC")
+    sell = plan_levels(signals, start, {"side": "SELL", "price": 3000.0}, PARAMS, 1.0, 3.0)
+    assert sell == {"side": "SELL", "entry": 3000.0, "risk": 10.0, "sl": 3010.0, "tp1": 2990.0, "tp2": 2970.0}
+    buy = plan_levels(signals, start, {"side": "BUY", "price": 3000.0}, PARAMS, 1.5, 3.0)
+    assert (buy["sl"], buy["tp1"], buy["tp2"]) == (2990.0, 3015.0, 3030.0)
+    assert plan_levels(signals, start, None, PARAMS, 1.0, 3.0) is None
+
+
+def test_day_without_signal_draws_planned_levels(conn_with_data):
+    path, _, _ = conn_with_data
+    with db.session(path) as conn:
+        v = chart.day_view(conn, date(2026, 3, 3), PARAMS, 1.0, 3.0, 5.5)
+    assert v["trigger"] is not None, "57 days of candles is enough history for the 20-day trend"
+    kinds = [lvl["kind"] for lvl in v["levels"]]
+    assert kinds.count("plan_sl") == 1 and kinds.count("plan_tp") == 2
+    p = v["planned"]
+    assert p["entry"] == v["trigger"]["price"]
+    assert abs(p["tp1"] - p["entry"]) == pytest.approx(p["risk"], abs=0.02)
+
+
+def test_daily_plan_message_includes_planned_levels():
+    from app.telegram_bot import format_daily_plan
+
+    snap = {"price": 4116.31, "trend": {"direction": "DOWN", "close": 4109.71, "ema": 4214.13},
+            "range": {"high": 4142.51, "low": 4105.59, "window_end": 16},
+            "planned": {"side": "SELL", "entry": 4105.59, "risk": 36.92, "sl": 4142.51, "tp1": 4068.67, "tp2": 3994.83}}
+    text = format_daily_plan("XAUUSD", snap, pd.Timestamp("2026-10-08 06:01", tz="UTC"), [])
+    assert "SL ~<code>4,142.51</code>" in text and "TP1 ~<code>4,068.67</code>" in text and "TP2 ~<code>3,994.83</code>" in text
 
 
 def test_weekend_has_no_view(conn_with_data):

@@ -69,6 +69,13 @@
     <dd>{{ chip("good", "Open, watching for a breakout") if snap.range.window_open else chip("idle", "Closed") }}</dd>
     {% endif %}
 
+    {% if snap.planned and not snap.signal_today %}
+    <dt>If it triggers (approx.)</dt>
+    <dd>{{ snap.planned.side }} near {{ "%.2f"|format(snap.planned.entry) }} ·
+      SL {{ "%.2f"|format(snap.planned.sl) }} · TP1 {{ "%.2f"|format(snap.planned.tp1) }} · TP2 {{ "%.2f"|format(snap.planned.tp2) }}
+      <div class="small muted">Risk about {{ "%.2f"|format(snap.planned.risk) }} per ounce. Exact levels come with the signal.</div></dd>
+    {% endif %}
+
     <dt>Today's signal</dt>
     <dd>{% if snap.signal_today %}
           {{ chip("good", snap.signal_today.direction ~ " at " ~ "%.2f"|format(snap.signal_today.price)) }}

@@ -133,6 +133,14 @@ def format_daily_plan(symbol: str, snap: dict, now, events) -> str:
         f"{'above' if up else 'below'} <code>{_p(level)}</code>",
         f"⏰ Until {_hour_local(rng['window_end'])}. At most one signal today.",
     ]
+    plan = snap.get("planned")
+    if plan:
+        lines += [
+            "",
+            "🎯 If it triggers (approx.):",
+            f"SL ~<code>{_p(plan['sl'])}</code> · TP1 ~<code>{_p(plan['tp1'])}</code> · TP2 ~<code>{_p(plan['tp2'])}</code>",
+            f"<i>Risk about ${_p(plan['risk'])}/oz. Exact levels come with the signal.</i>",
+        ]
     if events:
         lines += ["", "⚠️ High-impact USD news today (no new signals 30 min either side):"]
         lines += [f"• {_local(e.time)}: {html.escape(e.title)}" for e in events]

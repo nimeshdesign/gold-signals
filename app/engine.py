@@ -25,7 +25,7 @@ from .data_feed import DataFeedError, TwelveDataFeed
 from .indicators import ema
 from .news import NewsFilter
 from .outcome import TradeState, expire, step
-from .strategies import DEFAULT_PARAMS, build_data, compute_signals
+from .strategies import DEFAULT_PARAMS, build_data, compute_signals, plan_levels
 from .strategy import interval_to_timedelta
 from .telegram_bot import (TelegramClient, TelegramError, format_daily_plan, format_day_end, format_signal,
                            format_update, format_week_summary)
@@ -164,6 +164,10 @@ class Engine:
                 "complete": now.hour >= p["range_end"],
                 "window_open": p["range_end"] <= now.hour < p["window_end"] and now.weekday() < 5,
             }
+        if snap.get("range") and snap.get("trend") and snap["range"]["high"] is not None:
+            up = snap["trend"]["direction"] == "UP"
+            trigger = {"side": "BUY" if up else "SELL", "price": snap["range"]["high"] if up else snap["range"]["low"]}
+            snap["planned"] = plan_levels(signals, today, trigger, p, self.tp1_r, self.tp2_r)
         fired = signals[(signals["signal"] != 0) & (signals.index >= today)]
         snap["signal_today"] = None if fired.empty else {
             "time": _iso(fired["close_time"].iloc[0]),

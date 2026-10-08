@@ -10,7 +10,7 @@ import pandas as pd
 from .. import db
 from ..indicators import ema
 from ..outcome import TradeState, step
-from ..strategies import build_data, compute_signals
+from ..strategies import build_data, compute_signals, plan_levels
 
 M15 = pd.Timedelta(minutes=15)
 HISTORY_DAYS = 45  # enough daily candles for the 20-day trend EMA
@@ -72,6 +72,8 @@ def day_view(conn, day: date, params: dict, tp1_r: float, tp2_r: float, offset_h
         strategy_signal = {"time": f["close_time"], "side": "BUY" if f["signal"] > 0 else "SELL",
                            "price": round(float(f["close"]), 2)}
 
+    planned = plan_levels(signals, start, trigger, params, tp1_r, tp2_r)
+
     rows = conn.execute("SELECT * FROM signals WHERE created_at >= ? AND created_at < ? ORDER BY id",
                         (start.isoformat(), (start + pd.Timedelta(days=1)).isoformat())).fetchall()
     trades = []
@@ -95,6 +97,10 @@ def day_view(conn, day: date, params: dict, tp1_r: float, tp2_r: float, offset_h
                    {"price": range_lo, "title": "Range low", "kind": "range"}]
     if trigger and not trades:
         levels.append({"price": trigger["price"], "title": f"{trigger['side']} trigger", "kind": "trigger"})
+        if planned:
+            levels += [{"price": planned["sl"], "title": "Planned SL", "kind": "plan_sl"},
+                       {"price": planned["tp1"], "title": "Planned TP1", "kind": "plan_tp"},
+                       {"price": planned["tp2"], "title": "Planned TP2", "kind": "plan_tp"}]
     for t in trades:
         r = t["row"]
         levels += [{"price": r["entry"], "title": f"Entry {r['direction']}", "kind": "entry"},
@@ -126,6 +132,7 @@ def day_view(conn, day: date, params: dict, tp1_r: float, tp2_r: float, offset_h
         "range": {"high": range_hi, "low": range_lo,
                   "width": round(range_hi - range_lo, 2) if range_hi is not None else None},
         "trigger": trigger,
+        "planned": planned,
         "strategy_signal": strategy_signal,
         "trades": trades,
         "day_high": round(float(today["high"].max()), 2),

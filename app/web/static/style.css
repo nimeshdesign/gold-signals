@@ -210,3 +210,7 @@ nav form { display: inline; }
 .key-entry { border-color: var(--ink); }
 .key-sl { border-color: var(--loss); }
 .key-tp { border-color: var(--profit); }
+.key-plan-sl { border-top: 2px dashed var(--loss); }
+.key-plan-tp { border-top: 2px dashed var(--profit); }
+.plan-table table { font-size: 14px; }
+.plan-table td { padding: 4px 8px 4px 0; }

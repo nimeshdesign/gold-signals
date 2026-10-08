@@ -234,5 +234,27 @@ DEFAULT_PARAMS: dict[str, dict] = {
 }
 
 
+def plan_levels(signals: pd.DataFrame, start: pd.Timestamp, trigger: dict | None, params: dict,
+                tp1_r: float, tp2_r: float) -> dict | None:
+    """Approximate SL / TP1 / TP2 if the trigger fires, assuming entry at the trigger price.
+
+    Uses the strategy's own stop distance (range width, kept within limits of the hourly ATR) from the
+    latest candle of the trading window, so it matches what the real signal would use.
+    """
+    if not trigger:
+        return None
+    day = signals[(signals.index >= start + pd.Timedelta(hours=params["range_end"]))
+                  & (signals.index < start + pd.Timedelta(hours=params["window_end"]))]
+    sl_dist = day["sl_dist"].dropna()
+    if sl_dist.empty:
+        return None
+    risk = float(sl_dist.iloc[-1])
+    d = 1 if trigger["side"] == "BUY" else -1
+    entry = trigger["price"]
+    return {"side": trigger["side"], "entry": entry, "risk": round(risk, 2),
+            "sl": round(entry - d * risk, 2), "tp1": round(entry + d * risk * tp1_r, 2),
+            "tp2": round(entry + d * risk * tp2_r, 2)}
+
+
 def compute_signals(name: str, data: dict[str, pd.DataFrame], params: dict) -> pd.DataFrame:
     return STRATEGIES[name](data, params)
