@@ -1,27 +1,33 @@
 """The 24/5 signal engine.
 
-Every LTF candle close it:
+Every 15 minutes (just after each candle closes) it:
   1. pulls fresh candles,
-  2. checks the strategy on the candle that just closed and publishes any new signal,
-  3. moves open signals forward (TP1 / TP2 / SL / breakeven / expiry) and posts updates.
+  2. moves open trades forward (TP1 / TP2 / SL / breakeven / expiry),
+  3. checks every setup on the candles that closed since the last successful check and publishes new signals,
+  4. sends the daily plan / day-end / weekly summary when they are due.
+Between those checks, open trades are followed on 1-minute prices as often as the daily data allowance permits.
 
-A second thread long-polls Telegram for join requests and approves paying subscribers.
+Design rules (see the review notes in the README):
+  * No network call happens inside a database transaction (the website shares the database).
+  * Telegram messages go through the `outbox` table in the same transaction as the change they report,
+    then get sent; failures are retried, so nothing is lost or announced twice.
+  * Weekend quotes are ignored: while the market is closed nothing is fetched or traded.
 
 Run:  python -m app.engine            (loop forever)
-      python -m app.engine --once     (one cycle, useful for testing / cron)
+      python -m app.engine --once     (one cycle, useful for testing)
 """
 import argparse
 import json
 import logging
-import threading
+import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from . import db
+from . import db, market
 from .config import settings
-from .data_feed import DataFeedError, TwelveDataFeed
+from .data_feed import DailyLimitReached, DataFeedError, TwelveDataFeed
 from .indicators import ema
 from .news import NewsFilter
 from .outcome import TradeState, expire, step
@@ -32,17 +38,21 @@ from .telegram_bot import (TelegramClient, TelegramError, format_daily_plan, for
 
 log = logging.getLogger("engine")
 
-# 15-min candles for trade tracking and intraday rules; 1h candles (~10 months) for 4h/daily trends.
 M15_BARS = 1000
-M15_BACKFILL = 5000  # Twelve Data maximum per request (~7 weeks of 15-min candles)
-SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
-H1_BARS = 5000
+M15_BACKFILL = 5000   # Twelve Data maximum per request (~7 weeks of 15-min candles)
+H1_BARS = 5000        # ~10 months of hourly candles for the daily trend
 M15 = pd.Timedelta(minutes=15)
 M1 = pd.Timedelta(minutes=1)
+LATE_LIMIT = pd.Timedelta(minutes=30)   # still publish a signal this long after its candle closed
+SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
 
 
 def _iso(ts) -> str:
     return pd.Timestamp(ts).tz_convert("UTC").isoformat()
+
+
+def _now() -> pd.Timestamp:
+    return pd.Timestamp.now(tz="UTC")
 
 
 class Engine:
@@ -54,7 +64,6 @@ class Engine:
         self.strategy_params = {**DEFAULT_PARAMS[self.strategy_name], **settings.strategy_params}
         self.tp1_r = settings.strategy.tp1_r
         self.tp2_r = settings.strategy.tp2_r
-        self.skip_note: str | None = None
         self._h1: pd.DataFrame | None = None
         self._h1_at = pd.Timestamp(0, tz="UTC")
         # Extra setups (e.g. the New York open breakout) run alongside the main strategy.
@@ -63,6 +72,12 @@ class Engine:
              "label": e.get("label") or SETUP_LABELS.get(e["name"], e["name"]), "main": False}
             for e in settings.extra_strategies
         ]
+
+    @property
+    def setups(self) -> list[dict]:
+        main = {"name": self.strategy_name, "params": self.strategy_params,
+                "label": SETUP_LABELS.get(self.strategy_name, self.strategy_name), "main": True}
+        return [main, *self.extra_setups]
 
     def ny_session(self, now: pd.Timestamp) -> dict | None:
         """Today's New York open-breakout times in UTC (they move with US daylight saving)."""
@@ -76,58 +91,326 @@ class Engine:
                 "window_end": _iso(pd.Timestamp(f"{day} {p['window_end']:02d}:00",
                                                 tz="America/New_York").tz_convert("UTC"))}
 
-    @property
-    def setups(self) -> list[dict]:
-        main = {"name": self.strategy_name, "params": self.strategy_params,
-                "label": SETUP_LABELS.get(self.strategy_name, self.strategy_name), "main": True}
-        return [main, *self.extra_setups]
+    # ----- data requests and the daily allowance -----
 
-    # ----- one cycle -----
+    def _candles(self, interval: str, size: int) -> pd.DataFrame:
+        """Fetch candles, counting the request against today's allowance (in its own short transaction)."""
+        now = _now()
+        key = f"credits_{now:%Y-%m-%d}"
+        with db.session() as conn:
+            used = int(db.kv_get(conn, key, "0")) + 1
+            db.kv_set(conn, key, str(used))
+            if used >= 0.9 * settings.daily_credit_limit:
+                self.alert(conn, "credits", f"{used} of {settings.daily_credit_limit} data requests used today. "
+                                            "Trade tracking is slowing down to stay within the limit.")
+        try:
+            return self.feed.candles(interval, size)
+        except DailyLimitReached:
+            with db.session() as conn:
+                db.kv_set(conn, key, str(max(used, settings.daily_credit_limit)))
+            raise
+
+    def credits_today(self, conn) -> int:
+        return int(db.kv_get(conn, f"credits_{_now():%Y-%m-%d}", "0"))
+
+    def _reserved_credits(self, now: pd.Timestamp) -> int:
+        """Requests still needed today for the 15-minute checks (incl. their trade check) and hourly candles."""
+        midnight = now.normalize() + pd.Timedelta(days=1)
+        slots = pd.date_range(now.floor("15min") + M15, midnight, freq="15min", inclusive="left")
+        open_slots = sum(1 for t in slots if market.is_open(t))
+        hours = math.ceil((midnight - now) / pd.Timedelta(hours=1))
+        return open_slots * 2 + hours
+
+    def track_minutes(self, conn, now: pd.Timestamp | None = None) -> int:
+        """Minutes between 1-minute trade checks: as often as the rest of today's allowance can pay for.
+
+        Never faster than TRACK_MINUTES; at least TRACK_SLOW_MINUTES once TRACK_CREDIT_BUDGET is used;
+        and only from what is left after reserving the remaining 15-minute checks.
+        """
+        now = now or _now()
+        used = self.credits_today(conn)
+        minutes_left = max(1.0, (now.normalize() + pd.Timedelta(days=1) - now) / M1)
+        spare = settings.daily_credit_limit - used - self._reserved_credits(now) - 10
+        interval = settings.track_minutes
+        if used >= settings.track_credit_budget:
+            interval = max(interval, settings.track_slow_minutes)
+        if spare <= 0:
+            return 15  # nothing to spare: the 15-minute checks still follow open trades
+        return max(interval, math.ceil(minutes_left / spare))
+
+    # ----- one 15-minute cycle -----
 
     def run_cycle(self) -> None:
-        with db.session() as conn:
-            m15 = self._candles(conn, "15min", M15_BARS)
+        now = _now()
+        if not market.is_open(now):
+            # Weekend: no tradeable prices. Don't spend data requests; keep the dashboard informed.
+            with db.session() as conn:
+                db.kv_set(conn, "engine_heartbeat", _iso(now))
+                db.kv_set(conn, "market", "closed")
+                if settings.daily_updates:
+                    self.send_weekly(conn, now)
+            self.flush_outbox()
+            return
+
+        # 1. All network requests first, outside any database transaction.
+        m15 = self._candles("15min", M15_BARS)
+        if self._h1 is None or now.floor("1h") > self._h1_at:
             # Hourly candles only change once an hour; reuse them in between to save data requests.
-            now = pd.Timestamp.now(tz="UTC")
-            if self._h1 is None or now.floor("1h") > self._h1_at:
-                self._h1, self._h1_at = self._candles(conn, "1h", H1_BARS), now.floor("1h")
-            h1 = self._h1
+            self._h1, self._h1_at = self._candles("1h", H1_BARS), now.floor("1h")
+        h1 = self._h1
         if m15.empty or h1.empty:
             log.warning("No candles returned; skipping cycle")
             return
-        data = build_data(m15, h1)
+        bars = self.fetch_tracking_bars()
         with db.session() as conn:
-            self.save_candles(conn, m15)
-            try:
-                self.track_live(conn, fallback=m15)
-            except Exception as exc:
-                log.exception("Trade tracking failed")
-                _record_error(f"Trade tracking failed: {exc!r}")
-            signals = self.check_for_signal(conn, data)
-            for setup in self.setups[1:]:
+            backfill_needed = db.candle_count(conn) < M15_BACKFILL // 2
+        history = self._candles("15min", M15_BACKFILL) if backfill_needed else None
+        if settings.news_filter_enabled:
+            self.news.blocking_event()  # refresh the news calendar now, not inside the transaction
+        data = build_data(m15, h1)
+
+        # 2. One short transaction for everything this cycle decides (messages queued in the outbox).
+        with db.session() as conn:
+            if history is not None:
+                log.info("Backfilled %d candles for the chart page", db.upsert_candles(conn, history))
+            db.upsert_candles(conn, m15)
+            db.kv_set(conn, "market", "open")
+            if bars is not None:
+                self.track_live(conn, bars)
+            last_ok = db.kv_get(conn, "last_cycle_ok")
+            since = max(pd.Timestamp(last_ok), now - LATE_LIMIT) if last_ok else now - M15
+            signals = None
+            for setup in self.setups:
                 try:
-                    self.check_for_signal(conn, data, setup)
+                    found = self.check_for_signal(conn, data, setup, since=since, now=now)
                 except Exception as exc:
                     log.exception("Setup %s failed", setup["label"])
                     _record_error(f"{setup['label']} check failed: {exc!r}")
+                    continue
+                if setup["main"]:
+                    signals = found
             snap = None
-            try:
-                snap = self.status_snapshot(data, signals)
-                db.kv_set(conn, "engine_status", json.dumps(snap))
-            except Exception:
-                log.exception("Could not save status snapshot")
-            db.kv_set(conn, "engine_heartbeat", _iso(pd.Timestamp.now(tz="UTC")))
+            if signals is not None:
+                try:
+                    snap = self.status_snapshot(data, signals, conn)
+                    db.kv_set(conn, "engine_status", json.dumps(snap))
+                except Exception:
+                    log.exception("Could not save status snapshot")
+            db.kv_set(conn, "engine_heartbeat", _iso(_now()))
+            db.kv_set(conn, "last_cycle_ok", _iso(now))
             if snap and settings.daily_updates and self.strategy_name == "session_breakout":
                 try:
-                    self.send_daily_updates(conn, snap)
+                    self.send_daily_updates(conn, snap, now)
                 except Exception as exc:
                     log.exception("Daily update failed")
                     _record_error(f"Daily Telegram update failed: {exc!r}")
 
+        # 3. Send what was queued.
+        self.flush_outbox()
+
+    # ----- signals -----
+
+    def check_for_signal(self, conn, data: dict[str, pd.DataFrame], setup: dict | None = None,
+                         since: pd.Timestamp | None = None, now: pd.Timestamp | None = None) -> pd.DataFrame:
+        """Publish signals for one setup from candles that closed after `since` (default: the last 15 minutes).
+
+        Looking back to the last successful cycle means a failed or late cycle doesn't lose a signal.
+        """
+        setup = setup or self.setups[0]
+        now = now or _now()
+        since = since if since is not None else now - M15
+        signals = compute_signals(setup["name"], data, setup["params"])
+        if signals.empty:
+            return signals
+        fresh = signals[(signals["signal"] != 0) & (signals["close_time"] > since) & (signals["close_time"] <= now)]
+        for bar_time, row in fresh.iterrows():
+            self._publish(conn, setup, bar_time, row, now)
+        return signals
+
+    def _publish(self, conn, setup: dict, bar_time: pd.Timestamp, row: pd.Series, now: pd.Timestamp) -> None:
+        label = setup["label"]
+        entry_time = row["close_time"]
+        key = _iso(bar_time) if setup["main"] else f"{_iso(bar_time)}#{setup['name']}"
+        if db.signal_exists(conn, key):
+            return
+        if now - entry_time > LATE_LIMIT:
+            log.info("%s signal on %s is too old to publish", label, bar_time)
+            return
+        d = int(row["signal"])
+        direction = "BUY" if d == 1 else "SELL"
+        entry = round(float(row["close"]), 2)
+        risk = float(row["sl_dist"])
+        sl = round(entry - d * risk, 2)
+        tp1 = round(entry + d * risk * self.tp1_r, 2)
+        tp2 = round(entry + d * risk * self.tp2_r, 2)
+
+        if len(db.open_signals(conn)) >= settings.max_open_signals:
+            self._skip(conn, entry_time, f"{label} {direction} at {entry} skipped, "
+                                         f"{settings.max_open_signals} signal(s) already open")
+            return
+        if settings.news_filter_enabled:
+            event = self.news.blocking_event()
+            if event:
+                self._skip(conn, entry_time, f"{label} {direction} at {entry} skipped, news blackout ({event.title})")
+                return
+
+        signal_id = db.insert_signal(
+            conn, symbol=settings.display_symbol, direction=direction, entry=entry, sl=sl, tp1=tp1, tp2=tp2,
+            bar_time=_iso(bar_time), created_at=_iso(entry_time),
+            last_checked=_iso(entry_time - M1),  # track from the first minute after entry
+            strategy=setup["name"], main=setup["main"],
+        )
+        if signal_id is None:
+            return
+        text = format_signal(settings.display_symbol, direction, entry, sl, tp1, tp2, self.tp1_r, self.tp2_r,
+                             setup=label)
+        late = (now - entry_time) / M1
+        if late > 16:
+            text = f"⏱ <b>Late signal</b>: sent {late:.0f} min after the candle closed. Check the price before entering.\n\n" + text
+        db.enqueue(conn, settings.telegram_channel_id, text, kind="signal", signal_id=signal_id)
+        log.info("NEW SIGNAL #%d %s %s @ %.2f SL %.2f TP1 %.2f TP2 %.2f", signal_id, label, direction,
+                 entry, sl, tp1, tp2)
+
+    def _skip(self, conn, entry_time: pd.Timestamp, text: str) -> None:
+        log.info("Skipping: %s", text)
+        db.kv_set(conn, "skip_note", json.dumps({"date": f"{entry_time:%Y-%m-%d}",
+                                                 "text": f"{entry_time:%Y-%m-%d %H:%M} UTC: {text}"}))
+
+    # ----- live trade tracking -----
+
+    def fetch_tracking_bars(self) -> pd.DataFrame | None:
+        """1-minute candles covering every open trade since it was last checked, or None if nothing is open."""
+        with db.session() as conn:
+            rows = db.open_signals(conn)
+        if not rows:
+            return None
+        oldest = min(pd.Timestamp(r["last_checked"]) for r in rows)
+        need = int((_now() - oldest) / M1) + 3
+        try:
+            return self._candles("1min", max(5, min(need, 5000)))
+        except DailyLimitReached:
+            raise
+        except Exception as exc:
+            # No fallback to 15-minute candles (mixing bar sizes misorders events); try again next minute.
+            log.warning("1-minute prices unavailable (%s); will retry", exc)
+            return None
+
+    def track_live(self, conn, bars: pd.DataFrame | None = None) -> None:
+        """Move open trades forward on 1-minute candles, so TP/SL updates go out within a minute or two."""
+        if bars is None:
+            bars = self.fetch_tracking_bars()
+        if bars is None or bars.empty:
+            return
+        db.kv_set(conn, "live_price", json.dumps({"price": round(float(bars["close"].iloc[-1]), 2),
+                                                  "time": _iso(bars.index[-1] + M1)}))
+        self.track_open_signals(conn, bars, M1)
+
+    def track_open_signals(self, conn, ltf: pd.DataFrame, bar_len: pd.Timedelta = M15) -> None:
+        now = _now()
+        expiry_minutes = settings.signal_expiry_hours * 60
+        for row in db.open_signals(conn):
+            state = TradeState(row["direction"], row["entry"], row["sl"], row["tp1"], row["tp2"], status=row["status"])
+            new_bars = ltf[ltf.index > pd.Timestamp(row["last_checked"])]
+            # A SELL closes at the ask: compare its stop/targets with chart price + spread, like a broker does.
+            shift = settings.live_spread if row["direction"] == "SELL" else 0.0
+            updates: dict = {}
+            events: list[str] = []
+            for bar_time, bar in new_bars.iterrows():
+                for event in step(state, bar["high"] + shift, bar["low"] + shift, bar["open"] + shift):
+                    updates["tp1_hit_at" if event == "tp1" else "closed_at"] = _iso(bar_time + bar_len)
+                    events.append(event)
+                updates["last_checked"] = _iso(bar_time)
+                if state.is_closed:
+                    break
+            # The 48-hour limit counts market hours only, so a trade can't "expire" over a weekend.
+            if (not state.is_closed and not ltf.empty and market.is_open(now)
+                    and market.open_minutes_between(pd.Timestamp(row["created_at"]), now) >= expiry_minutes):
+                expire(state, float(ltf["close"].iloc[-1]) + shift)
+                updates["closed_at"] = _iso(now)
+                events.append("expired")
+            if updates:
+                updates["status"] = state.status
+                updates["result_r"] = state.result_r
+                db.update_signal(conn, row["id"], **updates)
+            # Queued in the same transaction as the status change: committed together or not at all.
+            for event in events:
+                text = format_update(event, row["direction"], row["symbol"], state.result_r)
+                log.info("Signal #%d: %s", row["id"], text)
+                db.enqueue(conn, settings.telegram_channel_id, text, kind="update", signal_id=row["id"])
+
+    def track_tick(self) -> int:
+        """One trade check between cycles. Returns minutes until the next check."""
+        if not market.is_open(_now()):
+            self.flush_outbox()
+            return 5
+        with db.session() as conn:
+            has_open = bool(db.open_signals(conn))
+            interval = self.track_minutes(conn)
+        if has_open:
+            bars = self.fetch_tracking_bars()
+            if bars is not None:
+                with db.session() as conn:
+                    self.track_live(conn, bars)
+        self.flush_outbox()
+        return interval if has_open else 1
+
+    # ----- Telegram outbox -----
+
+    def flush_outbox(self) -> int:
+        """Send queued Telegram messages (outside any transaction). Returns how many were sent."""
+        with db.session() as conn:
+            due = db.due_messages(conn)
+        sent = 0
+        for m in due:
+            reply_to = None
+            if m["kind"] == "update" and m["signal_id"]:
+                with db.session() as conn:
+                    waiting = conn.execute("SELECT 1 FROM outbox WHERE kind = 'signal' AND signal_id = ? "
+                                           "AND status = 'pending'", (m["signal_id"],)).fetchone()
+                    sig = conn.execute("SELECT telegram_msg_id FROM signals WHERE id = ?", (m["signal_id"],)).fetchone()
+                if waiting:
+                    continue  # never post an update before its signal
+                reply_to = sig["telegram_msg_id"] if sig else None
+            try:
+                msg_id = self.tg.send_message(m["chat"], m["text"], reply_to=reply_to)
+            except TelegramError as exc:
+                backoff = exc.retry_after or min(900, 30 * 2 ** m["attempts"])
+                with db.session() as conn:
+                    status = db.message_failed(conn, m["id"], str(exc), backoff)
+                log.warning("Telegram send failed (%s); %s", exc, "giving up" if status == "failed" else f"retry in {backoff}s")
+                _record_error(f"Telegram send failed: {exc}")
+                continue
+            with db.session() as conn:
+                db.message_sent(conn, m["id"], msg_id)
+                if m["kind"] == "signal" and m["signal_id"]:
+                    db.set_signal_message(conn, m["signal_id"], msg_id)
+            sent += 1
+        return sent
+
+    def alert(self, conn, key: str, text: str) -> None:
+        """Queue a warning for the owner, at most once per key per day."""
+        marker = f"alert_{key}_{_now():%Y-%m-%d}"
+        if db.kv_get(conn, marker):
+            return
+        db.kv_set(conn, marker, "1")
+        db.enqueue(conn, settings.telegram_channel_id, f"⚠️ <b>Engine alert</b>: {text}", kind="info")
+        log.warning("ALERT %s: %s", key, text)
+
+    def alert_now(self, key: str, text: str) -> None:
+        try:
+            with db.session() as conn:
+                self.alert(conn, key, text)
+            self.flush_outbox()
+        except Exception:
+            log.exception("Could not send alert")
+
+    # ----- daily messages -----
+
     def send_daily_updates(self, conn, snap: dict, now: pd.Timestamp | None = None) -> None:
-        """Daily plan when the range is set, a day-end note, and a Friday weekly summary. Each sent once."""
-        now = now or pd.Timestamp.now(tz="UTC")
+        """Daily plan when the range is set, a day-end note, and the weekly summary. Each queued once."""
+        now = now or _now()
         if now.weekday() >= 5:
+            self.send_weekly(conn, now)
             return
         day = now.strftime("%Y-%m-%d")
         rng = snap["range"]
@@ -137,45 +420,53 @@ class Engine:
                 and db.kv_get(conn, "plan_sent") != day):
             events = self.news.events_between(now.normalize(), now.normalize() + pd.Timedelta(days=1)) \
                 if settings.news_filter_enabled else []
-            self.tg.send_message(chat, format_daily_plan(settings.display_symbol, snap, now, events))
+            db.enqueue(conn, chat, format_daily_plan(settings.display_symbol, snap, now, events))
             db.kv_set(conn, "plan_sent", day)
-            log.info("Sent daily plan")
+            log.info("Queued daily plan")
 
         # Day end waits until every setup's trading window has closed.
-        day_over = now.normalize() + pd.Timedelta(hours=rng["window_end"])
-        if snap.get("ny_setup"):
-            day_over = max(day_over, pd.Timestamp(snap["ny_setup"]["window_end"]))
-        if now >= day_over and db.kv_get(conn, "plan_sent") == day and db.kv_get(conn, "dayend_sent") != day:
+        if now >= self._day_over(now, snap) and db.kv_get(conn, "dayend_sent") != day:
             today_rows = conn.execute("SELECT * FROM signals WHERE created_at >= ? ORDER BY id",
                                       (_iso(now.normalize()),)).fetchall()
-            self.tg.send_message(chat, format_day_end(settings.display_symbol, snap, today_rows))
+            db.enqueue(conn, chat, format_day_end(settings.display_symbol, snap, today_rows))
             db.kv_set(conn, "dayend_sent", day)
-            log.info("Sent day-end update")
+            log.info("Queued day-end update")
+            if now.weekday() == 4:
+                self.send_weekly(conn, now)
 
-            week = now.strftime("%G-W%V")
-            if now.weekday() == 4 and db.kv_get(conn, "week_sent") != week:
-                monday = now.normalize() - pd.Timedelta(days=now.weekday())
-                week_rows = conn.execute("SELECT * FROM signals WHERE created_at >= ? ORDER BY id",
-                                         (_iso(monday),)).fetchall()
-                self.tg.send_message(chat, format_week_summary(settings.display_symbol, week_rows, monday))
-                db.kv_set(conn, "week_sent", week)
-                log.info("Sent weekly summary")
+    def _day_over(self, now: pd.Timestamp, snap: dict) -> pd.Timestamp:
+        over = now.normalize() + pd.Timedelta(hours=snap["range"]["window_end"])
+        if snap.get("ny_setup"):
+            over = max(over, pd.Timestamp(snap["ny_setup"]["window_end"]))
+        return over
+
+    def send_weekly(self, conn, now: pd.Timestamp) -> None:
+        """Weekly summary on Friday after the day's windows close, or caught up over the weekend."""
+        if now.weekday() < 4:
+            return
+        monday = now.normalize() - pd.Timedelta(days=now.weekday())
+        week = monday.strftime("%G-W%V")
+        if db.kv_get(conn, "week_sent") == week:
+            return
+        if now.weekday() == 4 and db.kv_get(conn, "dayend_sent") != now.strftime("%Y-%m-%d"):
+            return  # Friday: wait for the day-end message first
+        week_rows = conn.execute("SELECT * FROM signals WHERE created_at >= ? AND created_at < ? ORDER BY id",
+                                 (_iso(monday), _iso(monday + pd.Timedelta(days=7)))).fetchall()
+        db.enqueue(conn, settings.telegram_channel_id, format_week_summary(settings.display_symbol, week_rows, monday))
+        db.kv_set(conn, "week_sent", week)
+        log.info("Queued weekly summary")
+
+    # ----- candles and status -----
 
     def save_candles(self, conn, m15: pd.DataFrame) -> None:
-        """Keep 15-min candles for the chart page. The first run backfills ~7 weeks (enough for the daily trend)."""
-        try:
-            if db.candle_count(conn) < M15_BACKFILL // 2:
-                history = self._candles(conn, "15min", M15_BACKFILL)
-                log.info("Backfilled %d candles for the chart page", db.upsert_candles(conn, history))
-            db.upsert_candles(conn, m15)
-        except Exception:
-            log.exception("Could not save candles")
+        """Keep 15-min candles for the chart page (the cycle backfills ~7 weeks on first run)."""
+        db.upsert_candles(conn, m15)
 
-    def status_snapshot(self, data: dict[str, pd.DataFrame], signals: pd.DataFrame) -> dict:
-        """What the strategy sees right now, for the owner's status page."""
+    def status_snapshot(self, data: dict[str, pd.DataFrame], signals: pd.DataFrame, conn=None) -> dict:
+        """What the strategy sees right now, for the status page and the daily messages."""
         m15 = data["15min"]
         p = self.strategy_params
-        now = pd.Timestamp.now(tz="UTC")
+        now = _now()
         today = now.normalize()
         snap: dict = {
             "updated": _iso(now),
@@ -209,7 +500,7 @@ class Engine:
                 "high": round(float(rng["high"].max()), 2) if len(rng) else None,
                 "low": round(float(rng["low"].min()), 2) if len(rng) else None,
                 "complete": now.hour >= p["range_end"],
-                "window_open": p["range_end"] <= now.hour < p["window_end"] and now.weekday() < 5,
+                "window_open": p["range_end"] <= now.hour < p["window_end"] and market.is_open(now),
             }
         if snap.get("range") and snap.get("trend") and snap["range"]["high"] is not None:
             up = snap["trend"]["direction"] == "UP"
@@ -221,7 +512,8 @@ class Engine:
             "direction": "BUY" if fired["signal"].iloc[0] > 0 else "SELL",
             "price": round(float(fired["close"].iloc[0]), 2),
         }
-        snap["skip_note"] = self.skip_note
+        note = json.loads(db.kv_get(conn, "skip_note") or "null") if conn is not None else None
+        snap["skip_note"] = note["text"] if note and note.get("date") == f"{now:%Y-%m-%d}" else None
         snap["ny_setup"] = self.ny_session(now)
         snap["setups"] = [s["label"] for s in self.setups]
         if settings.news_filter_enabled:
@@ -229,197 +521,12 @@ class Engine:
             snap["news_block"] = f"{event.title} at {event.time:%H:%M} UTC" if event else None
         return snap
 
-    def check_for_signal(self, conn, data: dict[str, pd.DataFrame], setup: dict | None = None) -> pd.DataFrame:
-        """Publish a new signal for one setup (the main strategy unless `setup` is given)."""
-        setup = setup or self.setups[0]
-        signals = compute_signals(setup["name"], data, setup["params"])
-        label = setup["label"]
-        if signals.empty:
-            return signals
-        last = signals.iloc[-1]
-        if last["signal"] == 0:
-            return signals
-        bar_time = signals.index[-1]
-        entry_time = last["close_time"]
-        # Only act on a candle that closed in the last 15 minutes (e.g. not after a restart or weekend gap).
-        age = pd.Timestamp.now(tz="UTC") - entry_time
-        if age > M15:
-            log.info("Signal on %s is %s old; not publishing", bar_time, age)
-            return signals
-        d = int(last["signal"])
-        direction = "BUY" if d == 1 else "SELL"
-        entry = round(float(last["close"]), 2)
-        risk = float(last["sl_dist"])
-        sl = round(entry - d * risk, 2)
-        tp1 = round(entry + d * risk * self.tp1_r, 2)
-        tp2 = round(entry + d * risk * self.tp2_r, 2)
-
-        if len(db.open_signals(conn)) >= settings.max_open_signals:
-            self.skip_note = (f"{entry_time:%Y-%m-%d %H:%M} UTC: {label} {direction} at {entry} skipped, "
-                              f"{settings.max_open_signals} signal(s) already open")
-            log.info("Skipping %s %s signal: %d signal(s) already open", label, direction, settings.max_open_signals)
-            return signals
-        if settings.news_filter_enabled:
-            event = self.news.blocking_event()
-            if event:
-                self.skip_note = (f"{entry_time:%Y-%m-%d %H:%M} UTC: {label} {direction} at {entry} skipped, "
-                                  f"news blackout ({event.title})")
-                log.info("Skipping %s %s signal: news blackout for %s at %s", label, direction, event.title, event.time)
-                return signals
-
-        signal_id = db.insert_signal(
-            conn,
-            symbol=settings.display_symbol,
-            direction=direction, entry=entry, sl=sl, tp1=tp1, tp2=tp2,
-            bar_time=_iso(bar_time),
-            created_at=_iso(entry_time),
-            last_checked=_iso(entry_time - M1),  # track from the first minute after entry
-            strategy=setup["name"], main=setup["main"],
-        )
-        if signal_id is None:
-            return signals  # already published for this candle
-        conn.commit()  # persist before sending so a crash can't double-send
-        log.info("NEW SIGNAL #%d %s %s @ %.2f SL %.2f TP1 %.2f TP2 %.2f", signal_id, label, direction,
-                 entry, sl, tp1, tp2)
-        text = format_signal(settings.display_symbol, direction, entry, sl, tp1, tp2, self.tp1_r, self.tp2_r,
-                             setup=label)
-        try:
-            msg_id = self.tg.send_message(settings.telegram_channel_id, text)
-            db.set_signal_message(conn, signal_id, msg_id)
-        except Exception as exc:
-            log.exception("Failed to send signal #%d to Telegram", signal_id)
-            _record_error(f"Telegram send failed for signal #{signal_id}: {exc!r}")
-        return signals
-
-    # ----- live trade tracking -----
-
-    def _candles(self, conn, interval: str, size: int) -> pd.DataFrame:
-        """Fetch candles and count the Twelve Data request against today's budget."""
-        key = f"credits_{pd.Timestamp.now(tz='UTC'):%Y-%m-%d}"
-        db.kv_set(conn, key, str(int(db.kv_get(conn, key, "0")) + 1))
-        return self.feed.candles(interval, size)
-
-    def credits_today(self, conn) -> int:
-        return int(db.kv_get(conn, f"credits_{pd.Timestamp.now(tz='UTC'):%Y-%m-%d}", "0"))
-
-    def track_minutes(self, conn) -> int:
-        """How often to check open trades: every minute, slower once near the daily data limit."""
-        if self.credits_today(conn) >= settings.track_credit_budget:
-            return settings.track_slow_minutes
-        return settings.track_minutes
-
-    def track_live(self, conn, fallback: pd.DataFrame | None = None) -> None:
-        """Move open trades forward on 1-minute candles, so TP/SL updates go out within a minute or two."""
-        rows = db.open_signals(conn)
-        if not rows:
-            return
-        oldest = min(pd.Timestamp(r["last_checked"]) for r in rows)
-        need = int((pd.Timestamp.now(tz="UTC") - oldest) / M1) + 3
-        try:
-            m1 = self._candles(conn, "1min", max(5, min(need, 5000)))
-            bars, bar_len = m1, M1
-        except Exception as exc:
-            if fallback is None:
-                raise
-            log.warning("1-minute prices unavailable (%s); tracking on 15-minute candles", exc)
-            bars, bar_len = fallback, M15
-        if bars.empty:
-            return
-        last = bars.iloc[-1]
-        db.kv_set(conn, "live_price", json.dumps({"price": round(float(last["close"]), 2),
-                                                  "time": _iso(bars.index[-1] + bar_len)}))
-        self.track_open_signals(conn, bars, bar_len)
-
-    def track_open_signals(self, conn, ltf: pd.DataFrame, bar_len: pd.Timedelta = M15) -> None:
-        now = pd.Timestamp.now(tz="UTC")
-        expiry = pd.Timedelta(hours=settings.signal_expiry_hours)
-        for row in db.open_signals(conn):
-            state = TradeState(row["direction"], row["entry"], row["sl"], row["tp1"], row["tp2"], status=row["status"])
-            last_checked = pd.Timestamp(row["last_checked"])
-            new_bars = ltf[ltf.index > last_checked]
-            # A SELL closes at the ask: compare its stop/targets with chart price + spread, like a broker does.
-            shift = settings.live_spread if row["direction"] == "SELL" else 0.0
-            updates: dict = {}
-            for bar_time, bar in new_bars.iterrows():
-                for event in step(state, bar["high"] + shift, bar["low"] + shift):
-                    when = _iso(bar_time + bar_len)
-                    if event == "tp1":
-                        updates["tp1_hit_at"] = when
-                    else:
-                        updates["closed_at"] = when
-                    self._announce(row, event, state.result_r)
-                updates["last_checked"] = _iso(bar_time)
-                if state.is_closed:
-                    break
-            if not state.is_closed and now - pd.Timestamp(row["created_at"]) > expiry and not ltf.empty:
-                expire(state, float(ltf["close"].iloc[-1]) + shift)
-                updates["closed_at"] = _iso(now)
-                self._announce(row, "expired", state.result_r)
-            if updates:
-                updates["status"] = state.status
-                updates["result_r"] = state.result_r
-                db.update_signal(conn, row["id"], **updates)
-
-    def _announce(self, row, event: str, result_r: float | None) -> None:
-        text = format_update(event, row["direction"], row["symbol"], result_r)
-        log.info("Signal #%d: %s", row["id"], text)
-        try:
-            self.tg.send_message(settings.telegram_channel_id, text, reply_to=row["telegram_msg_id"])
-            if event != "tp1" and settings.telegram_public_channel_id:
-                self.tg.send_message(settings.telegram_public_channel_id, text)
-        except Exception as exc:
-            log.exception("Failed to send update for signal #%d", row["id"])
-            _record_error(f"Telegram update failed for signal #{row['id']}: {exc!r}")
-
-    # ----- Telegram join requests -----
-
-    def handle_join_requests_forever(self, stop: threading.Event) -> None:
-        if self.tg.dry_run:
-            log.info("Telegram dry run: join-request handler disabled")
-            return
-        while not stop.is_set():
-            try:
-                self.handle_join_requests_once()
-            except Exception:
-                log.exception("Join request polling failed")
-                stop.wait(10)
-
-    def handle_join_requests_once(self, poll_timeout: int = 50) -> None:
-        with db.session() as conn:
-            offset = db.kv_get(conn, "telegram_offset")
-        updates = self.tg.get_updates(int(offset) if offset else None, timeout=poll_timeout)
-        for upd in updates:
-            req = upd.get("chat_join_request")
-            if req:
-                self._process_join_request(req)
-            with db.session() as conn:
-                db.kv_set(conn, "telegram_offset", str(upd["update_id"] + 1))
-
-    def _process_join_request(self, req: dict) -> None:
-        chat_id = req["chat"]["id"]
-        user_id = req["from"]["id"]
-        link = (req.get("invite_link") or {}).get("invite_link")
-        with db.session() as conn:
-            sub = db.get_subscriber_by(conn, "invite_link", link) if link else None
-            if sub and sub["status"] == "active":
-                self.tg.approve_join_request(chat_id, user_id)
-                db.update_subscriber(conn, sub["id"], telegram_user_id=user_id)
-                # One link, one person: revoke so a shared link can't let others in.
-                try:
-                    self.tg.revoke_invite_link(chat_id, link)
-                except TelegramError:
-                    log.exception("Could not revoke invite link for subscriber #%d", sub["id"])
-                log.info("Approved Telegram user %s for subscriber #%d", user_id, sub["id"])
-            else:
-                self.tg.decline_join_request(chat_id, user_id)
-                log.info("Declined Telegram user %s (link %s not tied to an active subscription)", user_id, link)
-
 
 def _record_error(message: str) -> None:
     """Keep the latest engine error for the status page."""
     try:
         with db.session() as conn:
-            db.kv_set(conn, "engine_last_error", json.dumps({"time": _iso(pd.Timestamp.now(tz="UTC")), "message": message}))
+            db.kv_set(conn, "engine_last_error", json.dumps({"time": _iso(_now()), "message": message}))
     except Exception:
         log.exception("Could not record error")
 
@@ -429,6 +536,12 @@ def seconds_until_next_bar(interval: str, delay: float = 15) -> float:
     step_s = interval_to_timedelta(interval).total_seconds()
     now = datetime.now(timezone.utc).timestamp()
     return step_s - (now % step_s) + delay
+
+
+def seconds_until_utc_midnight(delay: float = 30) -> float:
+    now = datetime.now(timezone.utc)
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return (midnight - now).total_seconds() + delay
 
 
 def main() -> None:
@@ -442,38 +555,50 @@ def main() -> None:
         engine = Engine()
     except DataFeedError as exc:
         raise SystemExit(f"Config error: {exc}. Copy .env.example to .env and fill it in.") from None
-    log.info("Engine started (dry_run=%s, symbol=%s, strategy=%s %s, TP %sR/%sR)", engine.tg.dry_run,
-             settings.symbol, engine.strategy_name, engine.strategy_params, engine.tp1_r, engine.tp2_r)
+    log.info("Engine started (dry_run=%s, symbol=%s, setups=%s, TP %sR/%sR)", engine.tg.dry_run,
+             settings.symbol, [s["label"] for s in engine.setups], engine.tp1_r, engine.tp2_r)
 
     if args.once:
         engine.run_cycle()
         return
 
-    stop = threading.Event()
-    threading.Thread(target=engine.handle_join_requests_forever, args=(stop,), daemon=True).start()
+    next_cycle = time.time()
+    next_tick = time.time() + 60
+    failures = 0
     try:
         while True:
-            try:
-                engine.run_cycle()
-            except Exception as exc:
-                log.exception("Cycle failed")
-                _record_error(f"Cycle failed: {exc!r}")
-            next_cycle = time.time() + seconds_until_next_bar("15min")
-            log.info("Next check in %.0fs", next_cycle - time.time())
-            # Between 15-minute signal checks, follow open trades on 1-minute prices.
-            while time.time() < next_cycle:
-                pause = 60.0
+            now = time.time()
+            if now >= next_cycle:
                 try:
-                    with db.session() as conn:
-                        if db.open_signals(conn):
-                            engine.track_live(conn)
-                            pause = 60.0 * engine.track_minutes(conn)
+                    engine.run_cycle()
+                    failures = 0
+                    next_cycle = time.time() + seconds_until_next_bar("15min")
+                except DailyLimitReached as exc:
+                    _record_error(str(exc))
+                    engine.alert_now("data_limit", "Daily data limit reached. No new signals or trade updates "
+                                                   "until 00:00 UTC (5:30 AM IST). Watch open trades on your broker.")
+                    next_cycle = time.time() + seconds_until_utc_midnight()
+                except Exception as exc:
+                    failures += 1
+                    log.exception("Cycle failed (%d in a row)", failures)
+                    _record_error(f"Cycle failed: {exc!r}")
+                    if failures == 3:
+                        engine.alert_now("cycle_failing", f"Signal checks are failing ({exc!r}). Retrying every minute.")
+                    next_cycle = time.time() + 60  # retry soon; missed candles are caught up
+                log.info("Next check in %.0fs", next_cycle - time.time())
+                next_tick = time.time() + 60
+            elif now >= next_tick:
+                try:
+                    minutes = engine.track_tick()
+                except DailyLimitReached:
+                    minutes = 15
                 except Exception as exc:
                     log.exception("Live tracking failed")
                     _record_error(f"Live tracking failed: {exc!r}")
-                time.sleep(max(1.0, min(pause, next_cycle - time.time())))
+                    minutes = 1
+                next_tick = time.time() + 60 * minutes
+            time.sleep(max(1.0, min(next_cycle, next_tick) - time.time()))
     except KeyboardInterrupt:
-        stop.set()
         log.info("Stopped")
 
 

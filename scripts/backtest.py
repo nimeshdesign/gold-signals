@@ -39,7 +39,7 @@ def run(m15: pd.DataFrame, strategy: str, params: dict, tp1_r: float, tp2_r: flo
     for extra in extras or []:
         extra_params = {**DEFAULT_PARAMS[extra["name"]], **extra.get("params", {})}
         signals = pd.concat([signals, compute_signals(extra["name"], data, extra_params).assign(strategy=extra["name"])])
-    signals = signals[signals["signal"] != 0].sort_index()
+    signals = signals[signals["signal"] != 0].sort_index(kind="stable")  # main setup first on ties
     cfg = SimConfig(tp1_r=tp1_r, tp2_r=tp2_r, spread=spread, max_open=settings.max_open_signals,
                     expiry_hours=settings.signal_expiry_hours)
     return simulate(signals, m15, cfg)
@@ -58,7 +58,7 @@ def summarize(trades: pd.DataFrame) -> str:
         f"Period:        {trades['entry_time'].min():%Y-%m-%d} -> {trades['closed_at'].max():%Y-%m-%d}",
         f"Trades:        {m['trades']}",
         f"Win rate:      {m['win_rate']}%",
-        f"Total:         {m['net_r']:+}R after spread   ({trades['result_r_gross'].sum():+.1f}R before)",
+        f"Total:         {m['net_r']:+}R after spread   ({trades['result_r_gross'].sum():+.1f}R as the live tracker scores it)",
         f"Avg / trade:   {m['avg_r']:+}R",
         f"Profit factor: {m['pf']}",
         f"Max drawdown:  {m['max_dd']}R",

@@ -154,7 +154,7 @@ def test_neighbours_skip_weekends():
     assert chart.neighbours(days, date(2026, 3, 5)) == (None, "2026-03-06")
 
 
-def test_chart_page(conn_with_data, monkeypatch):
+def test_chart_page(conn_with_data, monkeypatch, sign_in):
     path, _, sid = conn_with_data
     from app.web import main
 
@@ -163,7 +163,7 @@ def test_chart_page(conn_with_data, monkeypatch):
                                                              "strategy_params": PARAMS}))
     with TestClient(main.app) as client:
         assert client.get("/chart", follow_redirects=False).status_code == 303  # login required
-        client.cookies.set(auth.COOKIE, auth.make_session("admin", main._secret(), 3600))
+        sign_in(client)
         r = client.get(f"/chart?signal={sid}")
         assert r.status_code == 200
         for text in ("Wednesday 04 March 2026", "Signal #", "Stop loss", "lightweight-charts", "Range high"):
@@ -187,9 +187,19 @@ def test_engine_backfills_candles_once(tmp_path, monkeypatch):
             calls.append((interval, size))
             return m15.tail(size)
 
+    from app import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod.market, "is_open", lambda ts: True)
+    monkeypatch.setattr(engine_mod, "settings", SimpleNamespace(**{**vars(engine_mod.settings),
+                                                                   "news_filter_enabled": False, "daily_updates": False,
+                                                                   "extra_strategies": []}))
+    hourly = m15.resample("1h").agg({"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+    Feed.candles = lambda self, interval, size: (calls.append((interval, size)),
+                                                 hourly if interval == "1h" else m15.tail(size))[1]
     eng = Engine(feed=Feed(), telegram=TelegramClient("", dry_run=True), news=SimpleNamespace(blocking_event=lambda: None))
+    eng.run_cycle()
+    eng.run_cycle()
     with db.session(path) as conn:
-        eng.save_candles(conn, m15.tail(1000))
-        eng.save_candles(conn, m15.tail(1000))
         assert db.candle_count(conn) == min(len(m15), 5000)
-    assert calls == [("15min", 5000)]  # backfilled only the first time
+    assert calls.count(("15min", 5000)) == 1  # backfilled only the first time
+    assert calls.count(("1h", 5000)) == 1     # hourly candles fetched once per hour, not every cycle

@@ -10,6 +10,16 @@ WorkingDirectory=/opt/gold-signals
 ExecStart=/opt/gold-signals/.venv/bin/python -m app.engine
 Restart=always
 RestartSec=10
+# Give the engine time to finish the current step on restart.
+TimeoutStopSec=30
+
+# Hardening: the service can only write to its data folder.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/gold-signals/data
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

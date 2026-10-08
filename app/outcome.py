@@ -1,6 +1,6 @@
 """Trade management rules shared by the live tracker and the backtester.
 
-Position model published to subscribers:
+Position model used for every signal:
   * Half the position closes at TP1 and the stop moves to entry (breakeven).
   * The other half runs to TP2 or gets stopped at breakeven.
 
@@ -52,8 +52,12 @@ class TradeState:
         return self.status in FINAL
 
 
-def step(state: TradeState, high: float, low: float) -> list[str]:
-    """Advance the trade through one candle. Returns the new events (also appended to state.events)."""
+def step(state: TradeState, high: float, low: float, open_: float | None = None) -> list[str]:
+    """Advance the trade through one candle. Returns the new events (also appended to state.events).
+
+    If the candle OPENS beyond the stop (a gap), the stop fills at that open price, not at the stop level,
+    which is what a broker would do. Targets are limit orders, so they fill at the target level.
+    """
     if state.is_closed:
         return []
     new: list[str] = []
@@ -66,10 +70,15 @@ def step(state: TradeState, high: float, low: float) -> list[str]:
             return price_extreme >= level if buy else price_extreme <= level
         return price_extreme <= level if buy else price_extreme >= level
 
+    def stop_fill(level: float) -> float:
+        if open_ is not None and reached(open_, level, toward_profit=False):
+            return open_
+        return level
+
     if state.status == OPEN:
         if reached(adverse, state.sl, toward_profit=False):
             state.status = STOPPED
-            state.result_r = -1.0
+            state.result_r = round(min(-1.0, state.r_at(stop_fill(state.sl))), 2)
             new.append(STOPPED)
         elif reached(favorable, state.tp1, toward_profit=True):
             state.status = TP1
@@ -80,7 +89,7 @@ def step(state: TradeState, high: float, low: float) -> list[str]:
         half_tp1 = 0.5 * state.r_at(state.tp1)
         if reached(adverse, state.entry, toward_profit=False):
             state.status = BREAKEVEN
-            state.result_r = round(half_tp1, 2)
+            state.result_r = round(half_tp1 + 0.5 * min(0.0, state.r_at(stop_fill(state.entry))), 2)
             new.append(BREAKEVEN)
         elif reached(favorable, state.tp2, toward_profit=True):
             state.status = TARGET

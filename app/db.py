@@ -1,7 +1,7 @@
-"""SQLite storage shared by the engine (writer) and the website (reader + subscriber writes)."""
+"""SQLite storage shared by the engine (writer) and the website (reader, plus login sessions)."""
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -30,18 +30,6 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 
-CREATE TABLE IF NOT EXISTS subscribers (
-    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-    email                   TEXT,
-    stripe_customer_id      TEXT,
-    stripe_subscription_id  TEXT UNIQUE,
-    stripe_session_id       TEXT UNIQUE,
-    status                  TEXT NOT NULL DEFAULT 'active',
-    invite_link             TEXT UNIQUE,
-    telegram_user_id        INTEGER,
-    created_at              TEXT NOT NULL,
-    updated_at              TEXT NOT NULL
-);
 
 -- 15-minute price candles (open time, UTC ISO) for the chart page.
 CREATE TABLE IF NOT EXISTS candles (
@@ -51,6 +39,23 @@ CREATE TABLE IF NOT EXISTS candles (
     low   REAL NOT NULL,
     close REAL NOT NULL
 );
+
+-- Every Telegram message goes through here, so a failed send is retried instead of lost.
+CREATE TABLE IF NOT EXISTS outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat            TEXT NOT NULL,
+    text            TEXT NOT NULL,
+    kind            TEXT NOT NULL,          -- 'signal', 'update' (reply to a signal) or 'info'
+    signal_id       INTEGER,                -- the signal this message is, or replies to
+    status          TEXT NOT NULL DEFAULT 'pending',   -- pending / sent / failed
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_try        TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    sent_at         TEXT,
+    msg_id          INTEGER,
+    error           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(status, next_try);
 
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
@@ -115,6 +120,11 @@ def insert_signal(conn, *, symbol, direction, entry, sl, tp1, tp2, bar_time, cre
     return cur.lastrowid if cur.rowcount else None
 
 
+def signal_exists(conn, key: str) -> bool:
+    """Whether a signal with this idempotency key (bar_time, or bar_time#strategy) was already recorded."""
+    return conn.execute("SELECT 1 FROM signals WHERE bar_time = ?", (key,)).fetchone() is not None
+
+
 def set_signal_message(conn, signal_id: int, msg_id: int | None) -> None:
     conn.execute("UPDATE signals SET telegram_msg_id = ? WHERE id = ?", (msg_id, signal_id))
 
@@ -132,35 +142,37 @@ def all_signals(conn) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM signals ORDER BY created_at DESC, id DESC").fetchall()
 
 
-# ---------- subscribers ----------
+# ---------- Telegram outbox ----------
 
-def get_subscriber_by(conn, column: str, value) -> sqlite3.Row | None:
-    if column not in {"id", "stripe_session_id", "stripe_subscription_id", "invite_link", "telegram_user_id"}:
-        raise ValueError(column)
-    return conn.execute(f"SELECT * FROM subscribers WHERE {column} = ?", (value,)).fetchone()
+OUTBOX_MAX_ATTEMPTS = 8
 
 
-def upsert_subscriber_from_checkout(conn, *, session_id, email, customer_id, subscription_id) -> sqlite3.Row:
+def enqueue(conn, chat: str, text: str, kind: str = "info", signal_id: int | None = None) -> int:
     now = utcnow_iso()
-    existing = get_subscriber_by(conn, "stripe_session_id", session_id)
-    if existing is None and subscription_id:
-        existing = get_subscriber_by(conn, "stripe_subscription_id", subscription_id)
-    if existing is None:
-        conn.execute(
-            """INSERT INTO subscribers
-               (email, stripe_customer_id, stripe_subscription_id, stripe_session_id, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'active', ?, ?)""",
-            (email, customer_id, subscription_id, session_id, now, now),
-        )
-    return get_subscriber_by(conn, "stripe_session_id", session_id) or get_subscriber_by(
-        conn, "stripe_subscription_id", subscription_id
-    )
+    cur = conn.execute("INSERT INTO outbox (chat, text, kind, signal_id, next_try, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                       (str(chat), text, kind, signal_id, now, now))
+    return cur.lastrowid
 
 
-def update_subscriber(conn, subscriber_id: int, **fields) -> None:
-    fields["updated_at"] = utcnow_iso()
-    cols = ", ".join(f"{k} = ?" for k in fields)
-    conn.execute(f"UPDATE subscribers SET {cols} WHERE id = ?", (*fields.values(), subscriber_id))
+def due_messages(conn, now_iso: str | None = None) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM outbox WHERE status = 'pending' AND next_try <= ? ORDER BY id",
+                        (now_iso or utcnow_iso(),)).fetchall()
+
+
+def message_sent(conn, msg_id_row: int, telegram_msg_id: int | None) -> None:
+    conn.execute("UPDATE outbox SET status = 'sent', sent_at = ?, msg_id = ?, attempts = attempts + 1 WHERE id = ?",
+                 (utcnow_iso(), telegram_msg_id, msg_id_row))
+
+
+def message_failed(conn, msg_id_row: int, error: str, retry_in_seconds: float) -> str:
+    """Record a failed attempt; give up after OUTBOX_MAX_ATTEMPTS. Returns the new status."""
+    row = conn.execute("SELECT attempts FROM outbox WHERE id = ?", (msg_id_row,)).fetchone()
+    attempts = (row["attempts"] if row else 0) + 1
+    status = "failed" if attempts >= OUTBOX_MAX_ATTEMPTS else "pending"
+    next_try = (datetime.now(timezone.utc) + timedelta(seconds=retry_in_seconds)).isoformat(timespec="seconds")
+    conn.execute("UPDATE outbox SET attempts = ?, status = ?, next_try = ?, error = ? WHERE id = ?",
+                 (attempts, status, next_try, error[:500], msg_id_row))
+    return status
 
 
 # ---------- candles ----------

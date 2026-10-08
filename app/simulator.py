@@ -25,6 +25,8 @@ class SimConfig:
     spread: float = 0.30
     max_open: int = 1
     expiry_hours: float = 48
+    one_per_direction: bool = False         # skip a signal if a trade in the same direction is already open
+    friday_cutoff_hour: int | None = None   # no new trades on Friday from this UTC hour
 
 
 def simulate(signals: pd.DataFrame, m15: pd.DataFrame, cfg: SimConfig, bar: pd.Timedelta = BAR) -> pd.DataFrame:
@@ -34,36 +36,45 @@ def simulate(signals: pd.DataFrame, m15: pd.DataFrame, cfg: SimConfig, bar: pd.T
     tight stops/targets that a single 15-minute candle can't order (signals still come from 15-min closes).
     """
     sig = signals[signals["signal"] != 0]
-    by_time = {row.close_time: row for row in sig.itertuples()}
-    highs, lows, closes = m15["high"].to_numpy(), m15["low"].to_numpy(), m15["close"].to_numpy()
+    # Several setups can signal on the same candle; the live engine takes them in order (main first).
+    by_time: dict = {}
+    for row in sig.itertuples():
+        by_time.setdefault(row.close_time, []).append(row)
+    opens, highs, lows, closes = (m15[k].to_numpy() for k in ("open", "high", "low", "close"))
     times = m15.index
-    expiry = pd.Timedelta(hours=cfg.expiry_hours)
+    # Expiry counts candles, i.e. market time only (weekend quotes are not in the data).
+    expiry_bars = int(pd.Timedelta(hours=cfg.expiry_hours) / bar)
 
     open_trades: list[tuple] = []
     out = []
     for i in range(len(m15)):
         bar_close = times[i] + bar
         still = []
-        for row, st in open_trades:
+        for row, st, start_i in open_trades:
             shift = cfg.spread if st.direction == "SELL" else 0.0
-            step(st, highs[i] + shift, lows[i] + shift)
-            if not st.is_closed and bar_close - row.close_time >= expiry:
+            step(st, highs[i] + shift, lows[i] + shift, opens[i] + shift)
+            if not st.is_closed and i - start_i + 1 >= expiry_bars:
                 expire(st, closes[i] + shift)
             if st.is_closed:
                 out.append(_record(row, st, bar_close, cfg))
             else:
-                still.append((row, st))
+                still.append((row, st, start_i))
         open_trades = still
 
-        row = by_time.get(bar_close)
-        if row is not None and len(open_trades) < cfg.max_open:
+        for row in by_time.get(bar_close, []):
+            if len(open_trades) >= cfg.max_open:
+                break
+            if cfg.friday_cutoff_hour is not None and bar_close.weekday() == 4 and bar_close.hour >= cfg.friday_cutoff_hour:
+                continue
             d = row.signal
+            if cfg.one_per_direction and any(st.sign == d for _, st, _ in open_trades):
+                continue
             entry, risk = round(row.close, 2), row.sl_dist
             st = TradeState(
                 "BUY" if d == 1 else "SELL", entry,
                 sl=entry - d * risk, tp1=entry + d * risk * cfg.tp1_r, tp2=entry + d * risk * cfg.tp2_r,
             )
-            open_trades.append((row, st))
+            open_trades.append((row, st, i + 1))
     return pd.DataFrame(out)
 
 
@@ -73,6 +84,7 @@ def _record(row, st: TradeState, closed_at, cfg: SimConfig) -> dict:
         "entry_time": row.close_time, "closed_at": closed_at, "direction": st.direction,
         "entry": st.entry, "sl": round(st.sl, 2), "tp1": round(st.tp1, 2), "tp2": round(st.tp2, 2),
         "risk": round(st.risk, 2), "outcome": st.status, "strategy": getattr(row, "strategy", None),
+        # Live-tracker R: SELL spread is already inside (stops/targets checked at the ask); BUY spread is not.
         "result_r_gross": st.result_r,
         "result_r": round(st.result_r - cost, 3),
     }

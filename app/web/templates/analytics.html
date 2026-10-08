@@ -50,9 +50,21 @@
   <div class="tile"><div class="label">Profitable months</div><div class="value">{{ a.months_profitable }}/{{ a.months_total }}</div><div class="small muted">{{ "%.0f"|format(a.months_profitable / a.months_total * 100) }}% of months</div></div>
 </div>
 
+{% if a.worst %}
+<div class="card" style="margin-bottom:16px">
+  <h3>Realistic worst case</h3>
+  <p class="small muted" style="margin-top:0">The same {{ a.trades }} results shuffled into {{ "{:,}".format(a.worst.runs) }} random orders. Your real order of wins and losses will differ from the one above.</p>
+  <div class="tiles" style="margin:8px 0 0">
+    <div class="tile"><div class="label">Typical worst drawdown</div><div class="value">{{ "%.1fR"|format(a.worst.dd_median) }}</div><div class="small muted"><span data-money="{{ -a.worst.dd_median }}"></span></div></div>
+    <div class="tile"><div class="label">Bad case (1 in 20)</div><div class="value neg-ink">{{ "%.1fR"|format(a.worst.dd_95) }}</div><div class="small muted"><span data-money="{{ -a.worst.dd_95 }}"></span></div></div>
+    <div class="tile"><div class="label">Losing run, bad case</div><div class="value">{{ a.worst.streak_95 }}</div><div class="small muted">signals in a row</div></div>
+  </div>
+</div>
+{% endif %}
+
 <div class="card money">
   <label for="risk">If I risk <strong>$</strong></label>
-  <input id="risk" type="number" min="1" step="1" value="100" inputmode="numeric">
+  <input id="risk" type="number" min="1" step="1" value="{{ (a.risk_usd or 100)|round|int }}" inputmode="numeric">
   <span>per signal (1R), the dollar figures above show what that means.</span>
   <p class="small muted">1R is the amount you lose when the stop loss is hit. Many traders risk 1% of their account per signal.</p>
 </div>
@@ -127,10 +139,10 @@
 <p class="small muted">{{ table_total }} signals{% if table_total > table|length %}, newest {{ table|length }} shown{% endif %}.</p>
 <div class="table-wrap">
   <table>
-    <thead><tr><th>Sent (India time)</th><th>Setup</th><th>Side</th><th class="num">Entry</th><th class="num">Stop loss</th><th class="num">TP1</th><th class="num">TP2</th><th>Outcome</th><th class="num">Result</th><th class="num">Hours</th><th></th></tr></thead>
+    <thead><tr><th>Sent ({{ a.tz_name }})</th><th>Setup</th><th>Side</th><th class="num">Entry</th><th class="num">Stop loss</th><th class="num">TP1</th><th class="num">TP2</th><th>Outcome</th><th class="num">Result</th><th class="num">Hours</th><th></th></tr></thead>
     <tbody>{% for t in table %}
       <tr>
-        <td>{{ t.sent_ist.strftime("%d %b %Y %I:%M %p") }}</td><td>{{ t.setup }}</td><td>{{ t.direction }}</td>
+        <td>{{ t.sent_local.strftime("%d %b %Y %I:%M %p") }}</td><td>{{ t.setup }}</td><td>{{ t.direction }}</td>
         <td class="num">{{ "%.2f"|format(t.entry) }}</td><td class="num">{{ "%.2f"|format(t.sl) }}</td>
         <td class="num">{{ "%.2f"|format(t.tp1) }}</td><td class="num">{{ "%.2f"|format(t.tp2) }}</td>
         <td><span class="chip {{ t.kind }} small-chip"><span aria-hidden="true">{{ "●" if t.kind == "good" else "✕" }}</span> {{ t.outcome }}</span></td>

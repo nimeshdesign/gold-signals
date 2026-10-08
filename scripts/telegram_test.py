@@ -15,8 +15,7 @@ sys.path.insert(0, str(ROOT))
 from app.config import settings  # noqa: E402
 from app.telegram_bot import TelegramClient, TelegramError, format_signal, format_update  # noqa: E402
 
-RIGHTS = {"can_post_messages": "Post messages", "can_invite_users": "Invite users via link",
-          "can_restrict_members": "Ban users"}
+RIGHTS = {"can_post_messages": "Post messages"}
 
 
 def main() -> int:

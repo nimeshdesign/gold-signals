@@ -1,8 +1,7 @@
-"""Website: landing page, public track record, pricing, Stripe checkout and Telegram access.
+"""Private owner dashboard: live status, open trades, chart, analytics and track record.
 
-Run:  uvicorn app.web.main:app --host 0.0.0.0 --port 8000
+Run:  uvicorn app.web.main:app --host 127.0.0.1 --port 8000 --proxy-headers
 """
-import hmac
 import json
 import logging
 import secrets
@@ -12,24 +11,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, Form, HTTPException, Request
+import pandas as pd
+from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .. import db
+from .. import db, market
 from ..config import settings
 from ..strategies import DEFAULT_PARAMS
-from ..telegram_bot import TelegramClient, TelegramError
 from . import analytics, auth, chart
-from .payments import Stripe, StripeError, verify_webhook
 from .stats import compute_stats
 
 log = logging.getLogger("web")
 HERE = Path(__file__).parent
-
-# Stripe subscription statuses that keep channel access (past_due = card retry window).
-ACCESS_STATUSES = {"active", "trialing", "past_due"}
+SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
 
 
 @asynccontextmanager
@@ -38,17 +34,13 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.brand_name, docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title=settings.brand_name, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=HERE / "templates")
 templates.env.globals.update(brand=settings.brand_name, symbol=settings.display_symbol,
-                             support_email=settings.support_email, price_label=settings.price_label,
                              site_banner=settings.site_banner, strategy_name=settings.strategy_name,
-                             payments_enabled=bool(settings.stripe_secret_key and settings.stripe_price_id),
                              sp={**DEFAULT_PARAMS.get(settings.strategy_name, {}), **settings.strategy_params},
-                             params=settings.strategy, news_before=settings.news_block_before,
-                             news_after=settings.news_block_after, pip_size=settings.pip_size,
-                             lot_size=settings.lot_size)
+                             params=settings.strategy, pip_size=settings.pip_size, lot_size=settings.lot_size)
 
 
 def _fmt_dt(value: str | None) -> str:
@@ -60,22 +52,10 @@ def _fmt_dt(value: str | None) -> str:
 templates.env.filters["dt"] = _fmt_dt
 
 
-def telegram() -> TelegramClient:
-    return TelegramClient(settings.telegram_bot_token, dry_run=settings.dry_run)
-
-
-def stripe() -> Stripe:
-    try:
-        return Stripe(settings.stripe_secret_key)
-    except StripeError as exc:
-        raise HTTPException(503, "Payments are not configured yet") from exc
-
-
 # ---------- owner login ----------
 
-# Reachable without signing in: the login page itself, health checks, Stripe's server-to-server
-# webhook, and the stylesheet the login page needs.
-OPEN_PATHS = {"/login", "/healthz", "/stripe/webhook"}
+# Reachable without signing in: the login page, the health check and the login page's stylesheet.
+OPEN_PATHS = {"/login", "/healthz"}
 REMEMBER_SECONDS = 30 * 24 * 3600
 SESSION_SECONDS = 12 * 3600
 limiter = auth.LoginLimiter()
@@ -88,7 +68,12 @@ def _secret() -> str:
 
 
 def current_user(request: Request) -> str | None:
-    return auth.read_session(request.cookies.get(auth.COOKIE), _secret())
+    session = auth.read_session(request.cookies.get(auth.COOKIE), _secret())
+    if not session:
+        return None
+    user, sid = session
+    with db.session() as conn:
+        return user if auth.session_active(conn, sid) else None
 
 
 @app.middleware("http")
@@ -128,7 +113,7 @@ def login(request: Request, username: str = Form(""), password: str = Form(""),
     locked = limiter.seconds_locked(ip)
     if locked:
         return fail(f"Too many wrong attempts. Try again in {locked // 60 + 1} minutes.", 429)
-    user_ok = hmac.compare_digest(username.strip().lower(), settings.admin_username.lower())
+    user_ok = auth.same_text(username.strip().lower(), settings.admin_username.lower())
     if not (auth.verify_password(password, settings.admin_password_hash) and user_ok):
         limiter.failed(ip)
         log.warning("Failed login for %r from %s", username, ip)
@@ -137,27 +122,32 @@ def login(request: Request, username: str = Form(""), password: str = Form(""),
     limiter.succeeded(ip)
     log.info("Signed in: %s from %s", settings.admin_username, ip)
     max_age = REMEMBER_SECONDS if remember else SESSION_SECONDS
+    with db.session() as conn:
+        sid = auth.start_session(conn, max_age)
     resp = RedirectResponse(target, status_code=303)
-    resp.set_cookie(auth.COOKIE, auth.make_session(settings.admin_username, _secret(), max_age),
+    resp.set_cookie(auth.COOKIE, auth.make_session(settings.admin_username, sid, _secret(), max_age),
                     max_age=max_age if remember else None, httponly=True, samesite="lax",
-                    secure=settings.site_url.startswith("https://"))
+                    secure=request.url.scheme == "https" or settings.site_url.startswith("https://"))
     return resp
 
 
 @app.post("/logout")
-def logout():
+def logout(request: Request):
+    """Sign out this device: the session is removed on the server, so a copied cookie stops working too."""
+    session = auth.read_session(request.cookies.get(auth.COOKIE), _secret())
+    if session:
+        with db.session() as conn:
+            auth.end_session(conn, session[1])
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie(auth.COOKIE)
     return resp
 
 
-# ---------- public pages ----------
+# ---------- dashboard ----------
 
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    with db.session() as conn:
-        stats = compute_stats(db.all_signals(conn))
-    return templates.TemplateResponse(request, "index.html", {"stats": stats})
+@app.get("/")
+def home():
+    return RedirectResponse("/status", status_code=303)
 
 
 @app.get("/performance", response_class=HTMLResponse)
@@ -175,26 +165,17 @@ def performance(request: Request):
 
 @app.get("/api/signals")
 def api_signals():
-    """Closed signals only; live levels are for subscribers."""
     with db.session() as conn:
         rows = db.all_signals(conn)
-    fields = ("id", "symbol", "direction", "entry", "sl", "tp1", "tp2", "created_at", "status", "result_r", "closed_at")
-    return JSONResponse([{k: r[k] for k in fields} for r in rows if r["status"] not in ("open", "tp1")])
-
-
-@app.get("/pricing", response_class=HTMLResponse)
-def pricing(request: Request):
-    return templates.TemplateResponse(request, "pricing.html", {})
-
-
-@app.get("/disclaimer", response_class=HTMLResponse)
-def disclaimer(request: Request):
-    return templates.TemplateResponse(request, "disclaimer.html", {})
+    fields = ("id", "strategy", "symbol", "direction", "entry", "sl", "tp1", "tp2", "created_at", "status",
+              "result_r", "closed_at")
+    return JSONResponse([{k: r[k] for k in fields} for r in rows])
 
 
 @app.get("/status", response_class=HTMLResponse)
 def status(request: Request):
-    """Owner dashboard: is the engine alive, what does the strategy see, what is open."""
+    """Is the engine alive, what does the strategy see, and where do open trades stand right now."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with db.session() as conn:
         snap = json.loads(db.kv_get(conn, "engine_status") or "null")
         heartbeat = db.kv_get(conn, "engine_heartbeat")
@@ -202,10 +183,12 @@ def status(request: Request):
         open_rows = db.open_signals(conn)
         live = json.loads(db.kv_get(conn, "live_price") or "null")
         recent = db.all_signals(conn)[:15]
-        subs = conn.execute("SELECT status, COUNT(*) AS n FROM subscribers GROUP BY status").fetchall()
         stats = compute_stats(db.all_signals(conn))
+        credits = int(db.kv_get(conn, f"credits_{today}", "0"))
+        unsent = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0]
     now = datetime.now(timezone.utc)
     age_min = (now - datetime.fromisoformat(heartbeat)).total_seconds() / 60 if heartbeat else None
+    live_age = (now - datetime.fromisoformat(live["time"])).total_seconds() / 60 if live else None
     return templates.TemplateResponse(request, "status.html", {
         "snap": snap,
         "heartbeat": heartbeat,
@@ -215,10 +198,14 @@ def status(request: Request):
         "last_error": last_error,
         "open_rows": open_rows,
         "live": live,
+        "live_age": live_age,
         "live_trades": [live_trade(r, live) for r in open_rows] if live else [],
         "recent": recent,
-        "subs": {r["status"]: r["n"] for r in subs},
         "stats": stats,
+        "credits": credits,
+        "credit_limit": settings.daily_credit_limit,
+        "unsent": unsent,
+        "market_open": market.is_open(now),
         "dry_run": settings.dry_run,
         "channel_set": bool(settings.telegram_channel_id),
         "now": now,
@@ -226,15 +213,23 @@ def status(request: Request):
 
 
 def live_trade(row, live: dict) -> dict:
-    """Where an open trade stands at the latest price: P/L and distance to each level, in pips and $."""
+    """Where an open trade stands at the latest price: P/L and distance to each level, in pips and $.
+
+    After TP1, half the position is already banked at TP1 and the stop on the other half sits at entry,
+    so P/L = half at TP1 + half at the current price, and the stop distance is measured to entry.
+    """
     pip, oz = settings.pip_size, settings.lot_size * settings.contract_oz
     d = 1 if row["direction"] == "BUY" else -1
+    after_tp1 = row["status"] == "tp1"
     # Closing a BUY sells at the bid (chart price); closing a SELL buys at the ask (chart price + spread).
     exit_price = live["price"] + (settings.live_spread if d == -1 else 0.0)
-    pnl = d * (exit_price - row["entry"])
+    move = d * (exit_price - row["entry"])                      # per ounce, whole position
+    banked = d * (row["tp1"] - row["entry"])
+    pnl = 0.5 * banked + 0.5 * move if after_tp1 else move     # per ounce of the original position
     risk = abs(row["entry"] - row["sl"])
+    stop = row["entry"] if after_tp1 else row["sl"]
     span = abs(row["tp2"] - row["sl"])
-    position = (d * (exit_price - row["sl"])) / span if span else 0  # 0 = at SL, 1 = at TP2
+    position = (d * (exit_price - row["sl"])) / span if span else 0  # 0 = at original SL, 1 = at TP2
 
     def away(level: float, toward_profit: bool) -> float:
         gap = d * (level - exit_price)
@@ -244,10 +239,10 @@ def live_trade(row, live: dict) -> dict:
         "row": row, "price": round(exit_price, 2), "pnl_pips": round(pnl / pip),
         "pnl_r": round(pnl / risk, 2) if risk else 0.0,
         "pnl_usd": round(pnl * oz) if oz else None,
-        "to_sl": away(row["sl"], False), "to_tp1": away(row["tp1"], True), "to_tp2": away(row["tp2"], True),
+        "stop": stop, "to_sl": away(stop, False), "to_tp1": away(row["tp1"], True), "to_tp2": away(row["tp2"], True),
         "position": max(0.0, min(1.0, position)),
         "entry_pos": (risk / span) if span else 0, "tp1_pos": (risk + abs(row["tp1"] - row["entry"])) / span if span else 0,
-        "setup": {"session_breakout": "Asian breakout", "orb": "NY open breakout"}.get(row["strategy"], row["strategy"]),
+        "setup": SETUP_LABELS.get(row["strategy"], row["strategy"]),
     }
 
 
@@ -262,14 +257,18 @@ def _service_state(name: str) -> str:
 
 @app.get("/analytics", response_class=HTMLResponse)
 def analytics_page(request: Request, src: str = "live", period: str = "all", side: str = "all", show: str = "all"):
-    """Owner analytics: profitable trades, stop losses, and when they happen. Live or backtest data."""
+    """Profitable trades, stop losses, and when they happen. Live or backtest data."""
     src = "backtest" if src == "backtest" else "live"
     path = settings.backtest_database_path if src == "backtest" else settings.database_path
     rows = []
     if path.exists():
         with db.session(path) as conn:
             rows = db.all_signals(conn)
-    a = analytics.compute(analytics.filter_frame(analytics.to_frame(rows), period, side))
+    end = datetime.now(timezone.utc) if src == "live" else None  # backtests end in the past
+    a = analytics.compute(analytics.filter_frame(analytics.to_frame(rows), period, side,
+                                                 end=pd.Timestamp(end) if end else None),
+                          offset_hours=settings.display_tz_offset, tz_name=settings.display_tz_name,
+                          risk_usd=settings.lot_size * settings.contract_oz * settings.pip_size * 100)
     table = a.rows
     if show == "sl":
         table = [r for r in table if r["is_sl"]]
@@ -278,13 +277,15 @@ def analytics_page(request: Request, src: str = "live", period: str = "all", sid
     return templates.TemplateResponse(request, "analytics.html", {
         "a": a, "src": src, "period": period, "side": side, "show": show, "table": table[:500],
         "table_total": len(table), "has_backtest": settings.backtest_database_path.exists(),
+        "tz_name": settings.display_tz_name,
         "equity_json": json.dumps(a.equity),
         "monthly_json": json.dumps([[m["month"], m["net_r"], m["trades"], m["win_rate"]] for m in a.monthly]),
     })
 
 
 @app.get("/chart", response_class=HTMLResponse)
-def chart_page(request: Request, src: str = "live", day: str | None = None, signal: int | None = None):
+def chart_page(request: Request, src: str = "live", day: str | None = None,
+               signal: int | None = Query(None, ge=1, le=2**62)):
     """Price chart for one day with the strategy's levels and any signal's entry/SL/TP."""
     src = "backtest" if src == "backtest" else "live"
     path = settings.backtest_database_path if src == "backtest" else settings.database_path
@@ -313,101 +314,3 @@ def chart_page(request: Request, src: str = "live", day: str | None = None, sign
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
-
-
-# ---------- checkout ----------
-
-@app.post("/checkout")
-def checkout():
-    if not settings.stripe_price_id:
-        raise HTTPException(503, "STRIPE_PRICE_ID is not set")
-    session = stripe().create_checkout_session(
-        settings.stripe_price_id,
-        success_url=f"{settings.site_url}/success?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{settings.site_url}/pricing",
-    )
-    return RedirectResponse(session["url"], status_code=303)
-
-
-@app.get("/success", response_class=HTMLResponse)
-def success(request: Request, session_id: str):
-    try:
-        session = stripe().retrieve_checkout_session(session_id)
-    except StripeError as exc:
-        raise HTTPException(404, "Checkout session not found") from exc
-    if session.get("status") != "complete":
-        return RedirectResponse("/pricing", status_code=303)
-    sub = activate_from_checkout(session)
-    return templates.TemplateResponse(request, "success.html", {"sub": sub, "session_id": session_id})
-
-
-@app.post("/portal")
-def portal(session_id: str = Form(...)):
-    """Send the customer to Stripe's billing portal to update their card or cancel."""
-    with db.session() as conn:
-        sub = db.get_subscriber_by(conn, "stripe_session_id", session_id)
-    if not sub or not sub["stripe_customer_id"]:
-        raise HTTPException(404, "Subscription not found")
-    portal_session = stripe().create_portal_session(sub["stripe_customer_id"], f"{settings.site_url}/")
-    return RedirectResponse(portal_session["url"], status_code=303)
-
-
-@app.post("/stripe/webhook")
-async def stripe_webhook(request: Request):
-    payload = await request.body()
-    if not verify_webhook(payload, request.headers.get("stripe-signature", ""), settings.stripe_webhook_secret):
-        raise HTTPException(400, "Invalid signature")
-    event = json.loads(payload)
-    obj = event["data"]["object"]
-    kind = event["type"]
-    log.info("Stripe event %s", kind)
-
-    if kind == "checkout.session.completed" and obj.get("mode") == "subscription":
-        activate_from_checkout(obj)
-    elif kind in ("customer.subscription.updated", "customer.subscription.deleted"):
-        status = "canceled" if kind.endswith("deleted") else obj["status"]
-        sync_subscription_status(obj["id"], status)
-    return {"received": True}
-
-
-# ---------- subscriber lifecycle ----------
-
-def activate_from_checkout(session: dict):
-    """Create (or find) the subscriber for a completed checkout and make sure they have an invite link."""
-    details = session.get("customer_details") or {}
-    with db.session() as conn:
-        sub = db.upsert_subscriber_from_checkout(
-            conn,
-            session_id=session["id"],
-            email=details.get("email"),
-            customer_id=session.get("customer"),
-            subscription_id=session.get("subscription"),
-        )
-        if sub["status"] == "active" and not sub["invite_link"] and not sub["telegram_user_id"]:
-            try:
-                link = telegram().create_join_request_link(settings.telegram_channel_id, f"sub-{sub['id']}")
-                db.update_subscriber(conn, sub["id"], invite_link=link)
-            except TelegramError:
-                log.exception("Could not create invite link for subscriber #%d", sub["id"])
-        return db.get_subscriber_by(conn, "id", sub["id"])
-
-
-def sync_subscription_status(subscription_id: str, stripe_status: str) -> None:
-    with db.session() as conn:
-        sub = db.get_subscriber_by(conn, "stripe_subscription_id", subscription_id)
-        if not sub:
-            log.warning("Subscription %s not in database", subscription_id)
-            return
-        active = stripe_status in ACCESS_STATUSES
-        db.update_subscriber(conn, sub["id"], status="active" if active else stripe_status)
-        if active:
-            return
-        tg = telegram()
-        try:
-            if sub["telegram_user_id"]:
-                tg.remove_member(settings.telegram_channel_id, sub["telegram_user_id"])
-                log.info("Removed Telegram user %s (subscription %s)", sub["telegram_user_id"], stripe_status)
-            elif sub["invite_link"]:
-                tg.revoke_invite_link(settings.telegram_channel_id, sub["invite_link"])
-        except TelegramError:
-            log.exception("Could not revoke Telegram access for subscriber #%d", sub["id"])

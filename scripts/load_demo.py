@@ -42,7 +42,7 @@ def main() -> None:
                 strategy=getattr(t, "strategy", None) or "session_breakout",
                 main=(getattr(t, "strategy", None) or "session_breakout") == "session_breakout",
             )
-            # Gross R, matching how the live tracker scores signals (costs excluded, as the site states).
+            # Scored like the live tracker: SELL spread included (checked at the ask), BUY spread not.
             db.update_signal(conn, sid, status=t.outcome, result_r=t.result_r_gross, closed_at=t.closed_at.isoformat())
     print(f"Loaded {len(trades)} backtest trades into {path}")
     if Path(args.candles).exists():

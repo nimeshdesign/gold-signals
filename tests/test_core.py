@@ -1,7 +1,3 @@
-import hashlib
-import hmac
-import time
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,7 +8,6 @@ from app.indicators import atr, ema, rsi
 from app.news import parse_events
 from app.outcome import BREAKEVEN, STOPPED, TARGET, TP1, TradeState, expire, step
 from app.strategy import build_frame, interval_to_timedelta, latest_signal
-from app.web.payments import verify_webhook
 from app.web.stats import compute_stats
 
 
@@ -169,15 +164,25 @@ def test_news_parsing_filters_usd_high():
     assert events[0].time.hour == 12  # converted to UTC
 
 
-# ---------- stripe ----------
+# ---------- gaps ----------
 
-def test_webhook_signature():
-    secret, payload, ts = "whsec_test", b'{"id":"evt_1"}', int(time.time())
-    sig = hmac.new(secret.encode(), f"{ts}.".encode() + payload, hashlib.sha256).hexdigest()
-    assert verify_webhook(payload, f"t={ts},v1={sig}", secret)
-    assert not verify_webhook(payload + b" ", f"t={ts},v1={sig}", secret)
-    assert not verify_webhook(payload, f"t={ts - 1000},v1={sig}", secret)
-    assert not verify_webhook(payload, "garbage", secret)
+def test_stop_gapped_through_fills_at_the_open():
+    st = buy()  # entry 100, SL 90
+    step(st, high=89, low=85, open_=87)  # opens 3 below the stop
+    assert st.status == STOPPED and st.result_r == -1.3
+
+
+def test_breakeven_gap_fills_at_the_open():
+    st = buy()  # entry 100, TP1 115
+    step(st, 116, 101)
+    step(st, 99, 95, open_=96)  # opens 4 below entry after TP1
+    assert st.status == BREAKEVEN and st.result_r == pytest.approx(0.75 - 0.2)
+
+
+def test_normal_stop_unchanged_without_gap():
+    st = buy()
+    step(st, high=101, low=89, open_=100)
+    assert st.result_r == -1.0
 
 
 # ---------- db + stats ----------
@@ -204,21 +209,30 @@ def test_db_roundtrip_and_stats(tmp_path):
 
 # ---------- telegram ----------
 
-def test_get_updates_sends_poll_timeout_and_longer_http_timeout():
-    from app.telegram_bot import TelegramClient
+def test_telegram_errors_carry_retry_after():
+    from app.telegram_bot import TelegramClient, TelegramError
 
     class FakeResp:
         def json(self):
-            return {"ok": True, "result": [{"update_id": 1}]}
+            return {"ok": False, "description": "Too Many Requests: retry after 7", "parameters": {"retry_after": 7}}
 
     class FakeSession:
         def post(self, url, json, timeout):
-            self.url, self.body, self.http_timeout = url, json, timeout
             return FakeResp()
 
-    http = FakeSession()
-    updates = TelegramClient("t", session=http).get_updates(offset=5, timeout=50)
-    assert updates == [{"update_id": 1}]
-    assert http.url.endswith("/getUpdates")
-    assert http.body["timeout"] == 50 and http.body["offset"] == 5
-    assert http.http_timeout == 60
+    with pytest.raises(TelegramError) as err:
+        TelegramClient("t", session=FakeSession()).send_message("@c", "hi")
+    assert err.value.retry_after == 7
+
+
+def test_telegram_network_error_becomes_telegram_error():
+    import requests
+
+    from app.telegram_bot import TelegramClient, TelegramError
+
+    class FakeSession:
+        def post(self, url, json, timeout):
+            raise requests.ConnectionError("down")
+
+    with pytest.raises(TelegramError):
+        TelegramClient("t", session=FakeSession()).send_message("@c", "hi")

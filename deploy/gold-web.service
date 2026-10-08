@@ -1,15 +1,24 @@
 # /etc/systemd/system/gold-web.service
 [Unit]
-Description=Gold signals website
+Description=Gold signals dashboard
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=gold
 WorkingDirectory=/opt/gold-signals
-ExecStart=/opt/gold-signals/.venv/bin/uvicorn app.web.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+# --no-access-log keeps URLs (and their query strings) out of the system log.
+ExecStart=/opt/gold-signals/.venv/bin/uvicorn app.web.main:app --host 127.0.0.1 --port 8000 --proxy-headers --no-access-log
 Restart=always
 RestartSec=5
+
+# Hardening: the dashboard can only write to its data folder (login sessions live in the database).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/gold-signals/data
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

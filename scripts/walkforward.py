@@ -56,7 +56,8 @@ def walk_forward(pool: list[str], trades: dict[str, pd.DataFrame], start: pd.Tim
         best, best_r = None, -math.inf
         for k in pool:
             t = trades[k]
-            tr = t[(t["entry_time"] >= train_start) & (t["entry_time"] < test_start)]
+            # Only trades already closed before the test period (no outcomes from the future).
+            tr = t[(t["entry_time"] >= train_start) & (t["closed_at"] < test_start)]
             if len(tr) >= min_trades and tr["result_r"].sum() > best_r:
                 best, best_r = k, tr["result_r"].sum()
         if best is not None:
@@ -103,8 +104,8 @@ def main() -> None:
                 if signals is None:
                     signals = compute_signals("session_breakout", data, params)
                 t = simulate(signals, m15, SimConfig(tp1_r=tp[0], tp2_r=tp[1], spread=args.spread))
-                trades[k] = t[["entry_time", "direction", "outcome", "result_r"]] if len(t) else \
-                    pd.DataFrame(columns=["entry_time", "direction", "outcome", "result_r"])
+                trades[k] = t[["entry_time", "closed_at", "direction", "outcome", "result_r"]] if len(t) else \
+                    pd.DataFrame(columns=["entry_time", "closed_at", "direction", "outcome", "result_r"])
         print(f"{name}: {len(pools[name])} settings ({len(trades)} simulated, {time.time() - t0:.0f}s)", flush=True)
 
     results = {}

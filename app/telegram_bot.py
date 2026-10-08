@@ -10,7 +10,9 @@ log = logging.getLogger(__name__)
 
 
 class TelegramError(RuntimeError):
-    pass
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after  # seconds Telegram asked us to wait (rate limit), if any
 
 
 class TelegramClient:
@@ -23,10 +25,15 @@ class TelegramClient:
         if self.dry_run:
             log.info("[DRY RUN] telegram.%s %s", method, params)
             return None
-        resp = self.http.post(f"https://api.telegram.org/bot{self.token}/{method}", json=params, timeout=http_timeout)
-        data = resp.json()
+        try:
+            resp = self.http.post(f"https://api.telegram.org/bot{self.token}/{method}", json=params,
+                                  timeout=http_timeout)
+            data = resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise TelegramError(f"{method} failed: {exc}") from exc
         if not data.get("ok"):
-            raise TelegramError(f"{method} failed: {data.get('description')}")
+            retry = (data.get("parameters") or {}).get("retry_after")
+            raise TelegramError(f"{method} failed: {data.get('description')}", retry_after=retry)
         return data["result"]
 
     def send_message(self, chat_id, text: str, reply_to: int | None = None) -> int | None:
@@ -40,35 +47,6 @@ class TelegramClient:
             return None
         result = self._call("sendMessage", **params)
         return result["message_id"]
-
-    def create_join_request_link(self, chat_id, name: str) -> str:
-        """Invite link that sends a join request (which the engine approves) instead of joining directly."""
-        if self.dry_run:
-            return f"https://t.me/+DRYRUN_{name}"
-        result = self._call("createChatInviteLink", chat_id=chat_id, name=name[:32], creates_join_request=True)
-        return result["invite_link"]
-
-    def revoke_invite_link(self, chat_id, link: str) -> None:
-        self._call("revokeChatInviteLink", chat_id=chat_id, invite_link=link)
-
-    def approve_join_request(self, chat_id, user_id: int) -> None:
-        self._call("approveChatJoinRequest", chat_id=chat_id, user_id=user_id)
-
-    def decline_join_request(self, chat_id, user_id: int) -> None:
-        self._call("declineChatJoinRequest", chat_id=chat_id, user_id=user_id)
-
-    def remove_member(self, chat_id, user_id: int) -> None:
-        """Kick without a permanent ban, so the user can come back if they resubscribe."""
-        self._call("banChatMember", chat_id=chat_id, user_id=user_id)
-        self._call("unbanChatMember", chat_id=chat_id, user_id=user_id, only_if_banned=True)
-
-    def get_updates(self, offset: int | None, timeout: int = 50) -> list[dict]:
-        if self.dry_run:
-            return []
-        params = {"timeout": timeout, "allowed_updates": ["chat_join_request"]}
-        if offset is not None:
-            params["offset"] = offset
-        return self._call("getUpdates", http_timeout=timeout + 10, **params) or []
 
 
 # ---------- message templates ----------

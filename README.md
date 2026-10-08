@@ -1,16 +1,15 @@
 # Gold Signals
 
-A rule-based XAUUSD signal service:
+A private, rule-based XAUUSD (gold) signal tool for one trader:
 
-- **Engine** (`app/engine.py`): watches gold 24/5, sends signals to a private Telegram channel, and follows up on each trade when it hits TP1, TP2 or the stop.
-- **Website** (`app/web/`): landing page, a public track record with every closed signal, pricing, and Stripe checkout.
-- **Access control**: after payment, each customer gets a single-use Telegram link. The bot approves their join request and removes them when their subscription ends.
-- **Backtester** (`scripts/backtest.py`): runs the same rules on 2–3 years of history.
+- **Engine** (`app/engine.py`): watches gold while the market is open (Sun 6 PM – Fri 5 PM New York time), sends signals to your private Telegram channel, and follows each open trade minute by minute until TP1, TP2 or the stop.
+- **Dashboard** (`app/web/`, behind a login): live status and open trades, a chart with every level, analytics, and the track record.
+- **Backtester** (`scripts/backtest.py`): runs the same rules on 3 years of history.
 
 ```
-Twelve Data ──► engine ──► SQLite ◄── website ◄── Stripe webhooks
-                  │                      │
-                  └──► Telegram ◄────────┘  (invite links, approvals, removals)
+Twelve Data ──► engine ──► SQLite ◄── dashboard (login)
+                  │
+                  └──► outbox ──► Telegram (signals, TP/SL updates, daily plan, alerts)
 ```
 
 ## The strategy: Asian-session breakout
@@ -38,6 +37,14 @@ Results are counted in R (1R = entry-to-stop distance): stop = −1R, TP1 then b
 | **Total** | **373** | **57.9%** | **+71.5** |
 
 Profit factor 1.47, max drawdown 11.3R, longest losing streak 6. Buys and sells are both profitable. With a $0.80 spread it is still +50R.
+
+### Current live configuration (both setups, 100-pip stop)
+
+Asian breakout + New York open breakout, SL 100 / TP1 100 / TP2 300 pips, max 2 open, $0.30 spread, weekends removed, stop gaps filled at the gap price, 48-hour expiry in market hours (`python -m scripts.backtest --csv data/xauusd_15min_2023-10-01_now.csv`):
+
+886 trades, **54.3% wins, +74.0R** (profit factor 1.18), **max drawdown 23.0R**, longest losing streak 7. Asian breakout +54.3R, New York breakout +19.8R; BUYs +76.4R, SELLs −2.3R.
+
+Tested and **not adopted** (no robust gain): one trade per direction (+40.4R), no Friday entries after 16:00 / 12:00 UTC (+72.6R / +66.2R), buy-only (+78.0R overall but −3.0R in 2026), stop as a % of price.
 
 ### Strategy research: what it proves and what it doesn't
 
@@ -91,9 +98,9 @@ The backtest doesn't apply the news filter, because there's no free historical c
 ## 3. Telegram
 
 1. Message [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token to `TELEGRAM_BOT_TOKEN`.
-2. Create a **private** channel. Add the bot as an admin with *Invite users via link*, *Ban users* and *Post messages*.
-3. Find the channel id: post a message in the channel, forward it to [@userinfobot](https://t.me/userinfobot) (or a similar bot), and put the `-100…` id in `TELEGRAM_CHANNEL_ID`.
-4. Optional: put a public channel in `TELEGRAM_PUBLIC_CHANNEL_ID`. It receives only closed results, which works as free marketing.
+2. Create a **private** channel. Add the bot as an admin with *Post messages*.
+3. Run `python -m scripts.telegram_setup` to find the channel id, then `python -m scripts.telegram_setup --save <id>`.
+4. Check everything with `python -m scripts.telegram_test` (`--quiet` to send nothing).
 
 Run one cycle with `DRY_RUN=true` to see the messages in your terminal:
 
@@ -103,52 +110,28 @@ python -m app.engine --once
 
 Then set `DRY_RUN=false` and run `python -m app.engine` to keep it running.
 
-## 4. Stripe
+## 4. Dashboard login
 
-1. In the Stripe dashboard, create a Product with a **recurring** Price and put the price id in `STRIPE_PRICE_ID`. Put your secret key in `STRIPE_SECRET_KEY`. Use test-mode keys until launch.
-2. Under Settings → Billing → Customer portal, turn on the portal so customers can cancel and update their card.
-3. Under Settings → Public details, add a Terms of Service URL. Checkout requires customers to accept it.
-4. Add a webhook endpoint at `https://yourdomain.com/stripe/webhook` with these events:
-   `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`.
-   Copy its signing secret to `STRIPE_WEBHOOK_SECRET`.
+`python -m scripts.set_password` stores a hashed password in `.env` (and signs every device out; add `--keep-sessions` to avoid that). Locally: `uvicorn app.web.main:app --reload`, then open http://localhost:8000.
 
-Local testing: `stripe listen --forward-to localhost:8000/stripe/webhook`, then pay with card `4242 4242 4242 4242`.
+## 5. Deploy on a server
 
-Website: `uvicorn app.web.main:app --reload`, then open http://localhost:8000.
-
-**What a customer goes through:** Pricing → Stripe Checkout → `/success` shows their personal invite link → in Telegram they tap *Request to join* → the engine's bot approves them (the engine must be running) and revokes the link so it can't be shared. When the subscription is canceled or unpaid, the bot removes them from the channel.
-
-## 5. Deploy on a VPS
-
-Gold trades about 23 hours a day, 5 days a week, so run this on a server. A $6/month Ubuntu VPS (DigitalOcean, Hetzner, Contabo) is enough.
+The live setup runs on an Oracle Cloud "Always Free" Ubuntu VM. Upload the project folder and run:
 
 ```bash
-sudo adduser --system --group gold
-sudo git clone <your repo> /opt/gold-signals     # or copy the folder up with scp
-cd /opt/gold-signals
-sudo python3 -m venv .venv && sudo .venv/bin/pip install -r requirements.txt
-sudo cp .env.example .env && sudo nano .env      # SITE_URL=https://yourdomain.com, DRY_RUN=false
-sudo chown -R gold:gold /opt/gold-signals
-
-sudo cp deploy/gold-engine.service deploy/gold-web.service /etc/systemd/system/
-sudo systemctl enable --now gold-engine gold-web
-
-sudo apt install caddy sqlite3
-sudo cp deploy/Caddyfile /etc/caddy/Caddyfile    # put your domain in it first
-sudo systemctl reload caddy
-
-journalctl -u gold-engine -f                     # watch the engine log
+bash deploy/setup_server.sh --web     # installs, runs the tests (stops if any fail), restarts the services
+sudo journalctl -u gold-engine -f     # watch the engine
 ```
 
-Point your domain's DNS A record at the VPS. Caddy sets up HTTPS automatically. Add `deploy/backup.sh` to cron so the database (your track record) is backed up every day.
+The script keeps the server's own `.env` and `data/`, runs the code as root-owned and read-only, and lets the services write only to `data/`. It also schedules a private daily backup (`deploy/backup.sh`); copy `backups/` off the server now and then. For HTTPS, put your hostname in a Caddyfile (see `deploy/Caddyfile`) and open ports 80/443 in the cloud firewall.
 
-## Go-live checklist
+## Reliability
 
-- [ ] Backtest results hold up across several years, after spread
-- [ ] 1–2 months of paper trading with `DRY_RUN=false` into a private test channel, with the website showing those results
-- [ ] Legal check in your country: selling signals can count as investment advice and may need a licence. Have `disclaimer.html` reviewed and add Terms of Service and Privacy pages
-- [ ] Stripe in live mode; webhook tested end to end (subscribe → join → cancel → removed)
-- [ ] Backups running; you're notified if the engine stops (for example, an UptimeRobot check on `/healthz` for the site, and log alerts for the engine)
+- **Weekends:** vendors publish flat weekend quotes; they are dropped everywhere (`app/market.py`), so no weekend signals, tracking or expiries.
+- **Data allowance (800 requests/day):** trade tracking speed is set from what is left after reserving the remaining 15-minute checks; an "out of credits" reply pauses data requests until 00:00 UTC.
+- **Missed checks:** a failed cycle is retried after a minute and catches up on candles that closed since the last good one (up to 30 minutes; later signals are marked "late").
+- **Telegram:** every message goes through the `outbox` table in the same transaction as the change it reports, and is retried until sent.
+- **Alerts:** repeated failures, the data limit and low data allowance post a ⚠️ message to the channel.
 
 ## Project layout
 
@@ -163,9 +146,10 @@ app/
   data_feed.py     Twelve Data client, optional MT5 feed, CSV loader
   news.py          ForexFactory high-impact USD news filter
   telegram_bot.py  Bot API client + message templates
-  engine.py        the 24/5 loop + join-request approval
-  db.py            SQLite schema and queries
-  web/             FastAPI site, Stripe client, stats, templates
+  engine.py        the 24/5 loop: signals, minute-by-minute trade tracking, daily messages, alerts
+  market.py        gold market hours (weekend filter, market-time expiry)
+  db.py            SQLite schema and queries (signals, candles, outbox, kv)
+  web/             FastAPI dashboard: login, status, chart, analytics, track record
 scripts/          backtest.py, research.py (strategy search), load_demo.py (preview data)
 deploy/            systemd units, Caddyfile, backup script
 tests/
@@ -173,8 +157,7 @@ tests/
 
 ## Known limits
 
-- Outcomes are judged on 15-minute candles. Within a single candle the real order of moves is unknown, which is why a stop is always counted first when both are touched.
-- Published results exclude spread and slippage (the website says so). Subscribers' real results will be a little worse.
-- If a subscriber leaves the channel on their own, the bot can't send them a new link automatically. They need to email support, and you can clear `telegram_user_id` and `invite_link` for that row and have them reload their success page.
+- Backtests manage trades on 15-minute candles (live uses 1-minute). Within a single candle the real order of moves is unknown, so a stop is always counted first when both are touched. Stops gapped through fill at the gap price.
+- Live results are scored like the tracker: SELL spread included (stops/targets checked at the ask), BUY spread not, no slippage. Your broker fills will differ slightly.
 - The news feed covers the current week only. If it can't be fetched, signals continue by default; set `NEWS_FAIL_CLOSED=true` to pause signals instead.
 - MT5 as a data source: `MT5Feed` in `data_feed.py` works on Windows with a running terminal (`pip install MetaTrader5`, and set `MT5_SERVER_UTC_OFFSET_HOURS`). It isn't wired to a setting yet; swap it in `Engine.__init__`.

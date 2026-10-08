@@ -20,8 +20,6 @@ from app.config import settings  # noqa: E402
 ENV = ROOT / ".env"
 NEEDED = {
     "can_post_messages": "Post messages",
-    "can_invite_users": "Invite users via link",
-    "can_restrict_members": "Ban users",
 }
 
 
@@ -57,7 +55,7 @@ def check_channel(token: str, chat_id: str, bot_id: int) -> bool:
     member = call(token, "getChatMember", chat_id=chat_id, user_id=bot_id)
     print(f"\nChannel: {chat.get('title')}  (id {chat['id']}, type {chat['type']})")
     if chat.get("username"):
-        print("  ! This channel is PUBLIC (has a @username). Make it private so only subscribers see signals.")
+        print("  ! This channel is PUBLIC (has a @username). Make it private so only you see the signals.")
     if member["status"] not in ("administrator", "creator"):
         print("  ✗ The bot is not an admin of this channel. Add it as an administrator.")
         return False
@@ -72,7 +70,6 @@ def check_channel(token: str, chat_id: str, bot_id: int) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--save", metavar="CHAT_ID", help="check this channel id and save it as TELEGRAM_CHANNEL_ID")
-    ap.add_argument("--public", metavar="CHAT_ID", help="optional public results channel to save")
     args = ap.parse_args()
 
     token = settings.telegram_bot_token
@@ -98,11 +95,6 @@ def main() -> None:
         return
     save_env("TELEGRAM_CHANNEL_ID", args.save)
     print(f"\n✓ Saved TELEGRAM_CHANNEL_ID={args.save} to .env")
-    if args.public:
-        call(token, "getChat", chat_id=args.public)
-        save_env("TELEGRAM_PUBLIC_CHANNEL_ID", args.public)
-        print(f"✓ Saved TELEGRAM_PUBLIC_CHANNEL_ID={args.public} to .env")
-
     call(token, "sendMessage", chat_id=args.save, parse_mode="HTML",
          text=f"✅ <b>{settings.brand_name}</b> bot connected. Signals will appear here.")
     print("✓ Test message sent. Check the channel.")

@@ -2,12 +2,14 @@
 
 Only the standard library is used:
   * Passwords are stored as PBKDF2-SHA256 hashes (ADMIN_PASSWORD_HASH in .env), never in plain text.
-  * The session cookie is "<user>|<expires>|<hmac>", signed with SESSION_SECRET, so it can't be forged
-    or extended without the secret. Changing SESSION_SECRET signs everyone out.
+  * The session cookie is "<user>|<session id>|<expires>|<hmac>", signed with SESSION_SECRET, so it can't be forged
+    or extended. The session id must also be in the server-side list, so signing out really ends it.
+    Changing SESSION_SECRET (scripts/set_password.py does by default) signs every device out.
 """
 import base64
 import hashlib
 import hmac
+import json
 import secrets
 import time
 from collections import defaultdict
@@ -36,28 +38,69 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+def same_text(a: str, b: str) -> bool:
+    """Constant-time comparison that also works for non-ASCII text."""
+    return hmac.compare_digest(a.encode(), b.encode())
+
+
 def _sign(secret: str, payload: str) -> str:
     return hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
-def make_session(user: str, secret: str, max_age: int, now: float | None = None) -> str:
-    payload = f"{user}|{int((time.time() if now is None else now) + max_age)}"
+def make_session(user: str, sid: str, secret: str, max_age: int, now: float | None = None) -> str:
+    payload = f"{user}|{sid}|{int((time.time() if now is None else now) + max_age)}"
     return f"{payload}|{_sign(secret, payload)}"
 
 
-def read_session(cookie: str | None, secret: str, now: float | None = None) -> str | None:
-    """The signed-in username, or None if the cookie is missing, forged or expired."""
+def read_session(cookie: str | None, secret: str, now: float | None = None) -> tuple[str, str] | None:
+    """(username, session id) from a valid cookie, or None if it is missing, forged or expired."""
     if not cookie or not secret:
         return None
     try:
-        user, expires, sig = cookie.rsplit("|", 2)
+        user, sid, expires, sig = cookie.rsplit("|", 3)
     except ValueError:
         return None
-    if not hmac.compare_digest(sig, _sign(secret, f"{user}|{expires}")):
+    if not hmac.compare_digest(sig.encode(), _sign(secret, f"{user}|{sid}|{expires}").encode()):
         return None
     if not expires.isdigit() or int(expires) < (time.time() if now is None else now):
         return None
-    return user
+    return user, sid
+
+
+# Server-side session list (kv table, key "sessions": {sid: expires}). Signing out removes the id, so a
+# copied cookie stops working even before it expires.
+
+def _sessions(conn) -> dict:
+    row = conn.execute("SELECT value FROM kv WHERE key = 'sessions'").fetchone()
+    return json.loads(row[0]) if row else {}
+
+
+def _save_sessions(conn, sessions: dict) -> None:
+    conn.execute("INSERT INTO kv (key, value) VALUES ('sessions', ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (json.dumps(sessions),))
+
+
+def start_session(conn, max_age: int, now: float | None = None) -> str:
+    now = time.time() if now is None else now
+    sessions = {sid: exp for sid, exp in _sessions(conn).items() if exp > now}  # drop expired ones
+    sid = secrets.token_urlsafe(16)
+    sessions[sid] = int(now + max_age)
+    _save_sessions(conn, sessions)
+    return sid
+
+
+def session_active(conn, sid: str, now: float | None = None) -> bool:
+    return _sessions(conn).get(sid, 0) > (time.time() if now is None else now)
+
+
+def end_session(conn, sid: str) -> None:
+    sessions = _sessions(conn)
+    if sessions.pop(sid, None) is not None:
+        _save_sessions(conn, sessions)
+
+
+def end_all_sessions(conn) -> None:
+    _save_sessions(conn, {})
 
 
 class LoginLimiter:

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import requests
 
+from .market import drop_closed
 from .strategy import interval_to_timedelta
 
 log = logging.getLogger(__name__)
@@ -17,6 +18,10 @@ MAX_OUTPUTSIZE = 5000
 
 class DataFeedError(RuntimeError):
     pass
+
+
+class DailyLimitReached(DataFeedError):
+    """The data plan's requests for today are used up."""
 
 
 def _to_frame(values: list[dict]) -> pd.DataFrame:
@@ -56,18 +61,22 @@ class TwelveDataFeed:
                 time.sleep(5 * (attempt + 1))
                 continue
             if data.get("status") == "error":
-                # 429 = per-minute credit limit on the free plan; wait it out.
-                if data.get("code") == 429 and attempt < 2:
+                message = str(data.get("message", ""))
+                if data.get("code") == 429 and "for the day" in message.lower():
+                    # Daily allowance used up: retrying can't help until midnight UTC.
+                    raise DailyLimitReached(f"Twelve Data daily limit reached: {message}")
+                # 429 = per-minute credit limit on the free plan; wait it out once.
+                if data.get("code") == 429 and attempt < 1:
                     time.sleep(61)
                     continue
-                raise DataFeedError(f"Twelve Data error {data.get('code')}: {data.get('message')}")
+                raise DataFeedError(f"Twelve Data error {data.get('code')}: {message}")
             return data.get("values", [])
         raise DataFeedError("Twelve Data unreachable after 3 attempts")
 
     def candles(self, interval: str, outputsize: int = 500) -> pd.DataFrame:
         """Most recent closed candles."""
         values = self._request({"interval": interval, "outputsize": min(outputsize, MAX_OUTPUTSIZE)})
-        return drop_incomplete(_to_frame(values), interval)
+        return drop_closed(drop_incomplete(_to_frame(values), interval))
 
     def history(self, interval: str, start: str, end: str | None = None) -> pd.DataFrame:
         """Download a long history by paging backwards (used by the backtester)."""
@@ -103,7 +112,7 @@ class TwelveDataFeed:
         if not frames:
             return _to_frame([])
         df = pd.concat(frames).sort_index()
-        return drop_incomplete(df[~df.index.duplicated(keep="last")], interval)
+        return drop_closed(drop_incomplete(df[~df.index.duplicated(keep="last")], interval))
 
 
 class MT5Feed:
@@ -131,13 +140,17 @@ class MT5Feed:
         offset = pd.Timedelta(hours=float(os.getenv("MT5_SERVER_UTC_OFFSET_HOURS", "0")))
         df["datetime"] = pd.to_datetime(df["time"], unit="s", utc=True) - offset
         df = df.set_index("datetime")[["open", "high", "low", "close"]].astype(float)
-        return drop_incomplete(df, interval)
+        return drop_closed(drop_incomplete(df, interval))
 
 
-def load_csv(path: str) -> pd.DataFrame:
-    """CSV with columns datetime,open,high,low,close (datetime in UTC, candle open time)."""
+def load_csv(path: str, keep_weekends: bool = False) -> pd.DataFrame:
+    """CSV with columns datetime,open,high,low,close (datetime in UTC, candle open time).
+
+    Weekend quotes (market closed) are dropped unless keep_weekends=True, matching the live feed.
+    """
     df = pd.read_csv(path)
     df.columns = [c.strip().lower() for c in df.columns]
     df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
     df = df.set_index("datetime").sort_index()
-    return df[["open", "high", "low", "close"]].astype(float)
+    df = df[["open", "high", "low", "close"]].astype(float)
+    return df if keep_weekends else drop_closed(df)

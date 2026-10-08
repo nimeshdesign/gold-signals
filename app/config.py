@@ -63,8 +63,6 @@ class StrategyParams:
 class Settings:
     brand_name: str = field(default_factory=lambda: _str("BRAND_NAME", "Gold Signals"))
     site_url: str = field(default_factory=lambda: _str("SITE_URL", "http://localhost:8000").rstrip("/"))
-    support_email: str = field(default_factory=lambda: _str("SUPPORT_EMAIL", "support@example.com"))
-    price_label: str = field(default_factory=lambda: _str("PRICE_LABEL", "$49 / month"))
     # Shown at the top of every page when set (e.g. for a preview loaded with backtest data).
     site_banner: str = field(default_factory=lambda: _str("SITE_BANNER"))
 
@@ -74,17 +72,12 @@ class Settings:
 
     telegram_bot_token: str = field(default_factory=lambda: _str("TELEGRAM_BOT_TOKEN"))
     telegram_channel_id: str = field(default_factory=lambda: _str("TELEGRAM_CHANNEL_ID"))
-    telegram_public_channel_id: str = field(default_factory=lambda: _str("TELEGRAM_PUBLIC_CHANNEL_ID"))
 
     # Owner login for the website (hash made with: python -m scripts.set_password).
     admin_username: str = field(default_factory=lambda: _str("ADMIN_USERNAME", "admin"))
     admin_password_hash: str = field(default_factory=lambda: _str("ADMIN_PASSWORD_HASH"))
     # Signs login cookies. Keep it secret; changing it signs everyone out.
     session_secret: str = field(default_factory=lambda: _str("SESSION_SECRET"))
-
-    stripe_secret_key: str = field(default_factory=lambda: _str("STRIPE_SECRET_KEY"))
-    stripe_webhook_secret: str = field(default_factory=lambda: _str("STRIPE_WEBHOOK_SECRET"))
-    stripe_price_id: str = field(default_factory=lambda: _str("STRIPE_PRICE_ID"))
 
     database_path: Path = field(default_factory=lambda: ROOT / _str("DATABASE_PATH", "data/signals.db"))
     # Backtest trades for the analytics page (built with: python -m scripts.load_demo --db data/backtest.db)
@@ -109,6 +102,8 @@ class Settings:
     track_minutes: int = field(default_factory=lambda: _int("TRACK_MINUTES", 1))
     track_slow_minutes: int = field(default_factory=lambda: _int("TRACK_SLOW_MINUTES", 5))
     track_credit_budget: int = field(default_factory=lambda: _int("TRACK_CREDIT_BUDGET", 700))
+    # Twelve Data requests allowed per UTC day (free plan: 800).
+    daily_credit_limit: int = field(default_factory=lambda: _int("DAILY_CREDIT_LIMIT", 800))
     # Broker spread used when checking live SL/TP: a SELL closes at the ask (chart price + spread).
     live_spread: float = field(default_factory=lambda: _float("LIVE_SPREAD", 0.30))
     # Your usual lot size; signals show the $ risk and reward at this size (0 = don't show).

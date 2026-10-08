@@ -49,7 +49,7 @@ def test_filters(tmp_path):
     assert analytics.compute(analytics.filter_frame(df, "30d", "all")).trades == 3
 
 
-def test_page_live_empty_and_backtest(tmp_path, monkeypatch):
+def test_page_live_empty_and_backtest(tmp_path, monkeypatch, sign_in):
     path, _ = _rows(tmp_path)
     empty = tmp_path / "live.db"
     db.init_db(empty)
@@ -61,7 +61,7 @@ def test_page_live_empty_and_backtest(tmp_path, monkeypatch):
     from app.web import auth
 
     with TestClient(main.app) as client:
-        client.cookies.set(auth.COOKIE, auth.make_session("admin", main._secret(), 3600))
+        sign_in(client)
         r = client.get("/analytics")
         assert r.status_code == 200 and "No closed live signals yet" in r.text
         r = client.get("/analytics?src=backtest")

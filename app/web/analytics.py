@@ -4,13 +4,13 @@ Works on any list of signal rows (live database or the backtest database), so th
 numbers can be compared one-to-one with the backtest as signals accumulate.
 """
 from dataclasses import dataclass, field
-from datetime import timedelta
 
+import numpy as np
 import pandas as pd
 
 CLOSED = {"sl", "be", "tp2", "expired"}
 SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
-IST = timedelta(hours=5, minutes=30)
+
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 OUTCOME_LABELS = {
     "sl": "Stop loss hit (full loss)",
@@ -65,6 +65,9 @@ class Analytics:
     by_hour: list[Group] = field(default_factory=list)
     equity: list[tuple[str, float]] = field(default_factory=list)
     rows: list[dict] = field(default_factory=list)
+    worst: dict | None = None      # Monte Carlo drawdown / losing-streak estimate
+    tz_name: str = "IST"
+    risk_usd: float | None = None  # $ per 1R at your lot size, for the money figures
 
 
 def to_frame(rows) -> pd.DataFrame:
@@ -76,12 +79,13 @@ def to_frame(rows) -> pd.DataFrame:
     return df
 
 
-def filter_frame(df: pd.DataFrame, period: str, side: str) -> pd.DataFrame:
+def filter_frame(df: pd.DataFrame, period: str, side: str, end: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Keep the last N days before `end` (today for live data; the last signal for a finished backtest)."""
     if df.empty:
         return df
     if period in ("30d", "90d", "365d"):
-        cutoff = df["created_at"].max() - pd.Timedelta(days=int(period[:-1]))
-        df = df[df["created_at"] >= cutoff]
+        end = end if end is not None else df["created_at"].max()
+        df = df[df["created_at"] >= end - pd.Timedelta(days=int(period[:-1]))]
     if side in ("BUY", "SELL"):
         df = df[df["direction"] == side]
     return df
@@ -107,8 +111,30 @@ def _streak(mask: pd.Series) -> int:
     return best
 
 
-def compute(df: pd.DataFrame) -> Analytics:
+def worst_case(r: pd.Series, runs: int = 2000, seed: int = 7) -> dict:
+    """Shuffle the same trades into thousands of random orders (resampling with replacement) and see how
+    deep the drawdown and losing streak get. The 95th percentile is a fair "bad but realistic" case."""
+    rng = np.random.default_rng(seed)
+    values = r.to_numpy()
+    sims = rng.choice(values, size=(runs, len(values)), replace=True)
+    equity = sims.cumsum(axis=1)
+    peak = np.maximum.accumulate(np.concatenate([np.zeros((runs, 1)), equity], axis=1), axis=1)[:, 1:]
+    dd = (peak - equity).max(axis=1)
+    losing = sims <= 0
+    streaks = np.zeros(runs, dtype=int)
+    cur = np.zeros(runs, dtype=int)
+    for col in losing.T:
+        cur = np.where(col, cur + 1, 0)
+        streaks = np.maximum(streaks, cur)
+    return {"dd_median": round(float(np.median(dd)), 1), "dd_95": round(float(np.percentile(dd, 95)), 1),
+            "streak_95": int(np.percentile(streaks, 95)), "runs": runs}
+
+
+def compute(df: pd.DataFrame, offset_hours: float = 5.5, tz_name: str = "IST", risk_usd: float | None = None) -> Analytics:
+    """All numbers for the analytics page. Times are grouped in the display time zone (offset_hours)."""
     a = Analytics()
+    a.tz_name = tz_name
+    a.risk_usd = risk_usd
     if df.empty:
         return a
     a.open_count = int((~df["status"].isin(CLOSED)).sum())
@@ -165,16 +191,21 @@ def compute(df: pd.DataFrame) -> Analytics:
     a.by_side = [_group(s, g) for s, g in c.groupby("direction")]
     if "strategy" in c and c["strategy"].nunique() > 1:
         a.by_setup = [_group(SETUP_LABELS.get(s, s), g) for s, g in c.groupby("strategy")]
-    wd = c["created_at"].dt.weekday
+    # Group by the time you see on the signal (display time zone), matching the table below.
+    offset = pd.Timedelta(hours=offset_hours)
+    local = c["created_at"] + offset
+    wd = local.dt.weekday
     a.by_weekday = [_group(WEEKDAYS[d], c[wd == d]) for d in sorted(wd.unique())]
-    hour = c["created_at"].dt.hour
-    a.by_hour = [_group(f"{h:02d}:00 UTC · {(pd.Timestamp('2000-01-01') + pd.Timedelta(hours=h) + IST):%I:%M %p} IST",
-                        c[hour == h]) for h in sorted(hour.unique())]
+    hour = local.dt.hour
+    a.by_hour = [_group(f"{(pd.Timestamp('2000-01-03') + pd.Timedelta(hours=h)):%I:00 %p} {tz_name}", c[hour == h])
+                 for h in sorted(hour.unique())]
+    if n >= 20:
+        a.worst = worst_case(r)
 
     a.equity = [(t.isoformat(), round(v, 2)) for t, v in zip(c["closed_at"], eq)]
     for _, row in c.sort_values("created_at", ascending=False).iterrows():
         a.rows.append({
-            "id": row["id"], "sent": row["created_at"], "sent_ist": row["created_at"] + IST,
+            "id": row["id"], "sent": row["created_at"], "sent_local": row["created_at"] + offset,
             "direction": row["direction"], "entry": row["entry"],
             "setup": SETUP_LABELS.get(row.get("strategy"), row.get("strategy") or ""), "sl": row["sl"], "tp1": row["tp1"], "tp2": row["tp2"],
             "outcome": OUTCOME_LABELS[_outcome_key(row)], "kind": OUTCOME_KIND[_outcome_key(row)],

@@ -92,13 +92,48 @@ def test_day_end_waits_for_ny_window(tmp_db, monkeypatch):
     snap = {"price": 4000, "trend": {"direction": "DOWN", "close": 1, "ema": 2},
             "range": {"start": 0, "end": 6, "window_end": 16, "high": 4010, "low": 3990},
             "window_moves": None, "skip_note": None, "ny_setup": eng.ny_session(winter_day + pd.Timedelta(hours=7))}
+    def at(offset):
+        with db.session(tmp_db) as conn:
+            eng.send_daily_updates(conn, snap, winter_day + offset)
+        eng.flush_outbox()
+
+    at(pd.Timedelta(hours=7))
+    assert "Second setup" in sent[-1] and "NY open breakout" in sent[-1]
+    at(pd.Timedelta(hours=16, minutes=30))
+    assert len(sent) == 1  # NY window still open
+    at(pd.Timedelta(hours=17, minutes=1))
+    assert len(sent) == 2 and "either session" in sent[-1]
+
+
+def test_missed_signal_is_caught_up_and_marked_late(tmp_db, monkeypatch):
+    """A cycle that failed at 13:00 must not lose the 12:45 candle's signal: the 13:16 cycle publishes it."""
+    eng, sent = make_engine(monkeypatch, extras=())
+    idx = pd.date_range("2026-10-08 12:00", periods=4, freq="15min", tz="UTC")
+    signals = pd.DataFrame({"signal": [0, 0, 0, -1], "close": 4117.96, "close_time": idx + pd.Timedelta(minutes=15),
+                            "sl_dist": 10.0}, index=idx)
+    monkeypatch.setattr(engine_mod, "compute_signals", lambda name, data, params: signals)
+    now = pd.Timestamp("2026-10-08 13:46", tz="UTC")  # candle closed 13:00, 46 min ago -> too late
     with db.session(tmp_db) as conn:
-        eng.send_daily_updates(conn, snap, winter_day + pd.Timedelta(hours=7))
-        assert "Second setup" in sent[-1] and "NY open breakout" in sent[-1]
-        eng.send_daily_updates(conn, snap, winter_day + pd.Timedelta(hours=16, minutes=30))
-        assert len(sent) == 1  # NY window still open
-        eng.send_daily_updates(conn, snap, winter_day + pd.Timedelta(hours=17, minutes=1))
-        assert len(sent) == 2 and "either session" in sent[-1]
+        eng.check_for_signal(conn, {}, eng.setups[0], since=now - pd.Timedelta(minutes=60), now=now)
+        assert not db.all_signals(conn)
+    now = pd.Timestamp("2026-10-08 13:20", tz="UTC")  # 20 min late: still published, flagged late
+    with db.session(tmp_db) as conn:
+        eng.check_for_signal(conn, {}, eng.setups[0], since=now - pd.Timedelta(minutes=30), now=now)
+        eng.check_for_signal(conn, {}, eng.setups[0], since=now - pd.Timedelta(minutes=30), now=now)  # no duplicate
+        assert len(db.all_signals(conn)) == 1
+    eng.flush_outbox()
+    assert len(sent) == 1 and "Late signal" in sent[0] and "SELL" in sent[0]
+
+
+def test_weekend_cycle_fetches_nothing(tmp_db, monkeypatch):
+    eng, sent = make_engine(monkeypatch)
+    calls = []
+    eng.feed = SimpleNamespace(candles=lambda *a: calls.append(a))
+    monkeypatch.setattr(engine_mod.market, "is_open", lambda ts: False)
+    eng.run_cycle()
+    assert not calls
+    with db.session(tmp_db) as conn:
+        assert db.kv_get(conn, "market") == "closed" and db.kv_get(conn, "engine_heartbeat")
 
 
 def test_messages_name_the_setup():

@@ -3,7 +3,9 @@
   python -m scripts.set_password                      # asks for the new password twice
   echo "new-password" | python -m scripts.set_password --stdin
   python -m scripts.set_password --username nimesh    # also change the username
-  python -m scripts.set_password --sign-out-all       # new SESSION_SECRET: every device must sign in again
+  python -m scripts.set_password --keep-sessions      # don't sign other devices out
+
+By default a new SESSION_SECRET is created, so every device (including a stolen cookie) must sign in again.
 
 Restart the website afterwards (sudo systemctl restart gold-web) so it picks up the change.
 """
@@ -33,7 +35,7 @@ def main() -> int:
     ap.add_argument("--env", default=str(ROOT / ".env"))
     ap.add_argument("--username")
     ap.add_argument("--stdin", action="store_true", help="read the password from standard input")
-    ap.add_argument("--sign-out-all", action="store_true", help="generate a new SESSION_SECRET")
+    ap.add_argument("--keep-sessions", action="store_true", help="keep the current SESSION_SECRET")
     args = ap.parse_args()
 
     if args.stdin:
@@ -52,7 +54,7 @@ def main() -> int:
     text = set_env(text, "ADMIN_PASSWORD_HASH", hash_password(password))
     if args.username:
         text = set_env(text, "ADMIN_USERNAME", args.username.strip())
-    if args.sign_out_all or not re.search(r"^SESSION_SECRET=.+$", text, flags=re.M):
+    if not args.keep_sessions or not re.search(r"^SESSION_SECRET=.+$", text, flags=re.M):
         text = set_env(text, "SESSION_SECRET", secrets.token_hex(32))
     env.write_text(text, encoding="utf-8")
     print(f"Password saved to {env} (as a hash). Restart the website to apply it.")
