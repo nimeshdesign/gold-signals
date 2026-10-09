@@ -38,7 +38,7 @@ def run(m15: pd.DataFrame, strategy: str, params: dict, tp1_r: float, tp2_r: flo
     signals = compute_signals(strategy, data, params).assign(strategy=strategy)
     for extra in extras or []:
         extra_params = {**DEFAULT_PARAMS[extra["name"]], **extra.get("params", {})}
-        signals = pd.concat([signals, compute_signals(extra["name"], data, extra_params).assign(strategy=extra["name"])])
+        signals = pd.concat([signals, compute_signals(extra["name"], data, extra_params).assign(strategy=extra.get("id", extra["name"]))])
     signals = signals[signals["signal"] != 0].sort_index(kind="stable")  # main setup first on ties
     cfg = SimConfig(tp1_r=tp1_r, tp2_r=tp2_r, spread=spread, max_open=settings.max_open_signals,
                     expiry_hours=settings.signal_expiry_hours)

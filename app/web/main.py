@@ -19,13 +19,12 @@ from fastapi.templating import Jinja2Templates
 
 from .. import db, market
 from ..config import settings
-from ..strategies import DEFAULT_PARAMS
+from ..strategies import DEFAULT_PARAMS, SETUP_LABELS, setup_label
 from . import analytics, auth, chart
 from .stats import compute_stats
 
 log = logging.getLogger("web")
 HERE = Path(__file__).parent
-SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
 
 
 @asynccontextmanager
@@ -40,7 +39,8 @@ templates = Jinja2Templates(directory=HERE / "templates")
 templates.env.globals.update(brand=settings.brand_name, symbol=settings.display_symbol,
                              site_banner=settings.site_banner, strategy_name=settings.strategy_name,
                              sp={**DEFAULT_PARAMS.get(settings.strategy_name, {}), **settings.strategy_params},
-                             params=settings.strategy, pip_size=settings.pip_size, lot_size=settings.lot_size)
+                             params=settings.strategy, pip_size=settings.pip_size, lot_size=settings.lot_size,
+                             setup_label=setup_label)
 
 
 def _fmt_dt(value: str | None) -> str:

@@ -220,6 +220,19 @@ def orb(data, p) -> pd.DataFrame:
     return _output(df, "15min", signal, sl)
 
 
+# Display names for each setup id (the id stored with every signal). Extra setups can reuse a strategy
+# with different settings under their own id, e.g. "frankfurt" = session_breakout on the 06-07 UTC range.
+SETUP_LABELS = {
+    "session_breakout": "Asian breakout",
+    "frankfurt": "Frankfurt open breakout",
+    "orb": "NY open breakout",
+}
+
+
+def setup_label(setup_id: str | None) -> str:
+    return SETUP_LABELS.get(setup_id or "", setup_id or "")
+
+
 STRATEGIES: dict[str, Callable] = {
     "ema_cross": ema_cross,
     "trend_pullback": trend_pullback,

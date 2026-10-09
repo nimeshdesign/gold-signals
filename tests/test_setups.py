@@ -98,7 +98,7 @@ def test_day_end_waits_for_ny_window(tmp_db, monkeypatch):
         eng.flush_outbox()
 
     at(pd.Timedelta(hours=7))
-    assert "Second setup" in sent[-1] and "NY open breakout" in sent[-1]
+    assert "More setups today" in sent[-1] and "NY open breakout" in sent[-1]
     at(pd.Timedelta(hours=16, minutes=30))
     assert len(sent) == 1  # NY window still open
     at(pd.Timedelta(hours=17, minutes=1))
@@ -134,6 +134,29 @@ def test_weekend_cycle_fetches_nothing(tmp_db, monkeypatch):
     assert not calls
     with db.session(tmp_db) as conn:
         assert db.kv_get(conn, "market") == "closed" and db.kv_get(conn, "engine_heartbeat")
+
+
+def test_same_strategy_twice_gets_separate_ids_and_labels(tmp_db, monkeypatch):
+    """Asian and Frankfurt both run session_breakout; their signals must not collide or share a label."""
+    frankfurt = {"name": "session_breakout", "id": "frankfurt", "label": "Frankfurt open breakout",
+                 "params": {"range_start": 6, "range_end": 7, "window_end": 11, "sl_fixed": 10.0}}
+    eng, sent = make_engine(monkeypatch, extras=(frankfurt, ORB))
+    assert [s["id"] for s in eng.setups] == ["session_breakout", "frankfurt", "orb"]
+    idx = pd.date_range("2026-10-08 07:00", periods=2, freq="15min", tz="UTC")
+    signals = pd.DataFrame({"signal": [0, 1], "close": 4100.0, "close_time": idx + pd.Timedelta(minutes=15),
+                            "sl_dist": 10.0}, index=idx)
+    monkeypatch.setattr(engine_mod, "compute_signals", lambda name, data, params: signals)
+    now = pd.Timestamp("2026-10-08 07:31", tz="UTC")
+    with db.session(tmp_db) as conn:
+        eng.check_for_signal(conn, {}, eng.setups[0], now=now)   # Asian
+        eng.check_for_signal(conn, {}, eng.setups[1], now=now)   # Frankfurt, same candle
+        rows = db.all_signals(conn)
+    assert sorted(r["strategy"] for r in rows) == ["frankfurt", "session_breakout"]
+    eng.flush_outbox()
+    assert any("Frankfurt open breakout" in t for t in sent) and any("Asian breakout" in t for t in sent)
+    times = eng.session_times(pd.Timestamp("2026-10-08 05:00", tz="UTC"))
+    assert [t["label"] for t in times] == ["Frankfurt open breakout", "NY open breakout"]
+    assert times[0]["window_end"].startswith("2026-10-08T11:00")
 
 
 def test_messages_name_the_setup():

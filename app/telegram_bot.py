@@ -132,10 +132,13 @@ def format_daily_plan(symbol: str, snap: dict, now, events) -> str:
         f"{'above' if up else 'below'} <code>{_p(level)}</code>",
         f"⏰ Until {_hour_local(rng['window_end'])}. One Asian-breakout signal at most.",
     ]
-    ny = snap.get("ny_setup")
-    if ny:
-        lines += ["", f"🗽 Second setup: <b>NY open breakout</b>. Range {_local(ny['range_start'])}–"
-                      f"{_local(ny['range_end'])}, trades until {_local(ny['window_end'])}. Same 100-pip SL plan."]
+    sessions = snap.get("sessions")
+    if sessions is None and snap.get("ny_setup"):
+        sessions = [{"label": "NY open breakout", **snap["ny_setup"]}]
+    if sessions:
+        lines += ["", "🕒 <b>More setups today</b> (same trend direction, same 100-pip SL plan):"]
+        lines += [f"• {html.escape(s['label'])}: range {_local(s['range_start'])}–{_local(s['range_end'])}, "
+                  f"trades until {_local(s['window_end'])}" for s in sessions]
     plan = snap.get("planned")
     if plan:
         lines += [
@@ -167,7 +170,8 @@ def format_day_end(symbol: str, snap: dict, today_rows) -> str:
     states = {"open": "open, waiting for TP1 or SL", "tp1": "TP1 hit, stop moved to entry, still running",
               "sl": "stop loss hit", "be": "TP1 hit, then closed at entry", "tp2": "TP1 and TP2 hit",
               "expired": "closed at the time limit"}
-    labels = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
+    from .strategies import SETUP_LABELS as labels
+
     text = [head, "", f"Today's signals ({len(today_rows)}):"]
     for r in today_rows:
         res = f" ({r['result_r']:+.2f}R)" if r["result_r"] is not None else ""

@@ -8,8 +8,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from ..strategies import SETUP_LABELS
+
 CLOSED = {"sl", "be", "tp2", "expired"}
-SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 OUTCOME_LABELS = {

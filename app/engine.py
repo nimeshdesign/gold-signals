@@ -31,7 +31,7 @@ from .data_feed import DailyLimitReached, DataFeedError, TwelveDataFeed
 from .indicators import ema
 from .news import NewsFilter
 from .outcome import TradeState, expire, step
-from .strategies import DEFAULT_PARAMS, build_data, compute_signals, plan_levels
+from .strategies import DEFAULT_PARAMS, SETUP_LABELS, build_data, compute_signals, plan_levels
 from .strategy import interval_to_timedelta
 from .telegram_bot import (TelegramClient, TelegramError, format_daily_plan, format_day_end, format_signal,
                            format_update, format_week_summary)
@@ -44,7 +44,6 @@ H1_BARS = 5000        # ~10 months of hourly candles for the daily trend
 M15 = pd.Timedelta(minutes=15)
 M1 = pd.Timedelta(minutes=1)
 LATE_LIMIT = pd.Timedelta(minutes=30)   # still publish a signal this long after its candle closed
-SETUP_LABELS = {"session_breakout": "Asian breakout", "orb": "NY open breakout"}
 
 
 def _iso(ts) -> str:
@@ -66,16 +65,38 @@ class Engine:
         self.tp2_r = settings.strategy.tp2_r
         self._h1: pd.DataFrame | None = None
         self._h1_at = pd.Timestamp(0, tz="UTC")
-        # Extra setups (e.g. the New York open breakout) run alongside the main strategy.
-        self.extra_setups = [
-            {"name": e["name"], "params": {**DEFAULT_PARAMS[e["name"]], **e.get("params", {})},
-             "label": e.get("label") or SETUP_LABELS.get(e["name"], e["name"]), "main": False}
-            for e in settings.extra_strategies
-        ]
+        # Extra setups (e.g. Frankfurt and New York open breakouts) run alongside the main strategy.
+        # "name" is the strategy code to run; "id" is stored with each signal and picks its label, so the
+        # same strategy can run twice with different settings (Asian and Frankfurt are both session_breakout).
+        self.extra_setups = []
+        for e in settings.extra_strategies:
+            setup_id = e.get("id", e["name"])
+            self.extra_setups.append({
+                "name": e["name"], "id": setup_id, "main": False,
+                "params": {**DEFAULT_PARAMS[e["name"]], **e.get("params", {})},
+                "label": e.get("label") or SETUP_LABELS.get(setup_id, setup_id),
+            })
+
+    def session_times(self, now: pd.Timestamp) -> list[dict]:
+        """Today's range and trading-window times (UTC) for every extra setup, for messages and day end."""
+        out = []
+        for s in self.extra_setups:
+            p = s["params"]
+            if s["name"] == "session_breakout":
+                day = now.normalize()
+                times = {"range_start": _iso(day + pd.Timedelta(hours=p["range_start"])),
+                         "range_end": _iso(day + pd.Timedelta(hours=p["range_end"])),
+                         "window_end": _iso(day + pd.Timedelta(hours=p["window_end"]))}
+            elif s["name"] == "orb":
+                times = self.ny_session(now)
+            else:
+                continue
+            out.append({"label": s["label"], **times})
+        return out
 
     @property
     def setups(self) -> list[dict]:
-        main = {"name": self.strategy_name, "params": self.strategy_params,
+        main = {"name": self.strategy_name, "id": self.strategy_name, "params": self.strategy_params,
                 "label": SETUP_LABELS.get(self.strategy_name, self.strategy_name), "main": True}
         return [main, *self.extra_setups]
 
@@ -230,7 +251,7 @@ class Engine:
     def _publish(self, conn, setup: dict, bar_time: pd.Timestamp, row: pd.Series, now: pd.Timestamp) -> None:
         label = setup["label"]
         entry_time = row["close_time"]
-        key = _iso(bar_time) if setup["main"] else f"{_iso(bar_time)}#{setup['name']}"
+        key = _iso(bar_time) if setup["main"] else f"{_iso(bar_time)}#{setup['id']}"
         if db.signal_exists(conn, key):
             return
         if now - entry_time > LATE_LIMIT:
@@ -258,7 +279,7 @@ class Engine:
             conn, symbol=settings.display_symbol, direction=direction, entry=entry, sl=sl, tp1=tp1, tp2=tp2,
             bar_time=_iso(bar_time), created_at=_iso(entry_time),
             last_checked=_iso(entry_time - M1),  # track from the first minute after entry
-            strategy=setup["name"], main=setup["main"],
+            strategy=setup["id"], main=setup["main"],
         )
         if signal_id is None:
             return
@@ -435,9 +456,10 @@ class Engine:
                 self.send_weekly(conn, now)
 
     def _day_over(self, now: pd.Timestamp, snap: dict) -> pd.Timestamp:
+        """When the last trading window of the day closes (all setups)."""
         over = now.normalize() + pd.Timedelta(hours=snap["range"]["window_end"])
-        if snap.get("ny_setup"):
-            over = max(over, pd.Timestamp(snap["ny_setup"]["window_end"]))
+        for sess in snap.get("sessions") or ([snap["ny_setup"]] if snap.get("ny_setup") else []):
+            over = max(over, pd.Timestamp(sess["window_end"]))
         return over
 
     def send_weekly(self, conn, now: pd.Timestamp) -> None:
@@ -515,6 +537,7 @@ class Engine:
         note = json.loads(db.kv_get(conn, "skip_note") or "null") if conn is not None else None
         snap["skip_note"] = note["text"] if note and note.get("date") == f"{now:%Y-%m-%d}" else None
         snap["ny_setup"] = self.ny_session(now)
+        snap["sessions"] = self.session_times(now)
         snap["setups"] = [s["label"] for s in self.setups]
         if settings.news_filter_enabled:
             event = self.news.blocking_event()
